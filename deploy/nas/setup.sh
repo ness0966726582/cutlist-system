@@ -20,6 +20,8 @@ if [ ! -f .env ]; then
   echo "已建立 .env（資料庫密碼隨機，請勿刪除）"
 fi
 mkdir -p data/db data/files
+# Synology 的 @eaDir 會讓 PostgreSQL 第一次初始化失敗；資料庫實際放在 data/db/pgdata (compose 的 PGDATA)
+[ -d data/db/pgdata ] || rm -rf data/db/@eaDir
 
 # 3. 啟動
 docker compose up -d

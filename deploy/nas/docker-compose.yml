@@ -9,6 +9,7 @@ services:
       POSTGRES_DB: cutlist
       POSTGRES_USER: cutlist
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?請在 .env 設定 POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata   # Synology 會在資料夾放 @eaDir，用子資料夾避免 initdb 判定非空
       TZ: Asia/Taipei
     volumes:
       - ./data/db:/var/lib/postgresql/data
