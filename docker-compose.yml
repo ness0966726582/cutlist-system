@@ -1,0 +1,50 @@
+services:
+  db:
+    build: ./db                         # postgres:16-alpine + db/init/*.sql
+    container_name: cutlist-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cutlist}
+      POSTGRES_USER: ${POSTGRES_USER:-cutlist}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cutlist_dev}
+      TZ: Asia/Taipei
+    volumes:
+      - cutlist_db_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-15433}:5432"      # 15432 已被 twin_db 使用，改用 15433
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cutlist} -d ${POSTGRES_DB:-cutlist}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .                      # 需要根目錄的 VERSION / CHANGELOG.md
+      dockerfile: api/Dockerfile
+    container_name: cutlist-api
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cutlist}:${POSTGRES_PASSWORD:-cutlist_dev}@db:5432/${POSTGRES_DB:-cutlist}
+      FILES_DIR: /data/files
+      TZ: Asia/Taipei
+    volumes:
+      - cutlist_files:/data/files          # 圖面 / 附件 (PDF、圖片) 與縮圖快取
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  web:
+    build: ./web                        # nginx.conf 與 html/ 打包進映像檔 (改前端後需 --build)
+    container_name: cutlist-web
+    ports:
+      - "${WEB_PORT:-8100}:80"         # 8080/8090/8091 已被其他容器使用，改用 8100
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  cutlist_db_data:
+  cutlist_files:

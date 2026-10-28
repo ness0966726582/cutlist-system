@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+*.log
+samples/out/
+匯出範例_*.xlsx
+.DS_Store
+Thumbs.db

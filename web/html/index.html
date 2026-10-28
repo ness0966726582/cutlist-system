@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拆單專案管理</title>
+<link rel="stylesheet" href="style.css?v=__BUILD__">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">拆單專案管理系統</div>
+  <nav>
+    <a href="#/projects">專案</a>
+    <a href="#/customers">客戶</a>
+    <a href="#/master">基礎資料</a>
+    <a href="#/feedback">回饋</a>
+    <a href="#/changelog">更新紀錄</a>
+    <a href="/docs" target="_blank">API 文件</a>
+  </nav>
+  <span id="verbadge" class="verbadge" title="系統版本"></span>
+  <button id="tourbtn" class="tour-launch" title="重看這一頁的操作導覽">？ 導覽</button>
+</header>
+<main id="app"><div class="card">載入中…</div></main>
+<button id="fbbtn" class="fb-launch" title="回報問題或提出需求">💬 意見回饋</button>
+<div id="toast" class="toast"></div>
+<script src="tour.js?v=__BUILD__"></script>
+<script src="app.js?v=__BUILD__"></script>
+</body>
+</html>
