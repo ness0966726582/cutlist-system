@@ -1,8 +1,8 @@
-# 在 Synology DS723+ 部署拆單系統
+# 在 Synology NAS 部署拆單系統（DS223 / DS723+ 皆可）
 
 兩條路都不需要在 NAS 裝 Git、不需要原始碼：
 
-- **A. 離線安裝包（最簡單，建議第一次用）**：Windows 電腦跑 `.\scripts\make-nas-bundle.ps1` 產生 `dist\cutlist-nas-<版本>`（含映像 tar、compose、腳本、目前資料備份，約 220 MB），整包上傳到 NAS 跑一個指令。不用 GitHub token。
+- **A. 離線安裝包（最簡單，建議第一次用）**：Windows 電腦跑 `.\scripts\make-nas-bundle.ps1` 產生（ARM 機種如 DS223 要加 `-Arch arm64`；x86 如 DS723+ 不用） `dist\cutlist-nas-<版本>`（含映像 tar、compose、腳本、目前資料備份，約 220 MB），整包上傳到 NAS 跑一個指令。不用 GitHub token。
 - **B. 從 GHCR 拉映像**：之後更新用。GitHub 每次發版把映像推到 GitHub Container Registry，NAS `update.sh` 拉新版。需要一次 `docker login ghcr.io`。
 
 ## A. 離線安裝包（約 10 分鐘）
