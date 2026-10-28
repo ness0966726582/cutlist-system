@@ -4,6 +4,39 @@
 > 版本號在 `VERSION`，每次更新寫 `CHANGELOG.md`（系統內「更新紀錄」頁直接顯示）。
 > 主機 DB port 改為 **15434**（15433 被 ness_db 使用），在 `.env` 設定。
 
+## 換一台電腦部署（Windows / Linux / NAS）
+
+需要：Docker（Windows 裝 Docker Desktop；Linux 裝 Docker Engine + compose plugin）、能登入 GitHub 的方式（repo 是私有的）。
+
+```bash
+git clone https://github.com/ness0966726582/cutlist-system.git
+```
+
+```bash
+cd cutlist-system; .\scripts\install.ps1
+```
+
+Linux / NAS 改成 `bash scripts/install.sh`。第一次會自動建 `.env`（隨機資料庫密碼、port 8100 / 15434），建映像、載入基礎資料，約 2～3 分鐘，完成後開 `http://<那台IP>:8100`。
+沒有 Git 的電腦：到 GitHub 頁面 Code → Download ZIP 解壓縮後一樣跑 install；但之後更新就要重新下載，建議裝 Git 或 GitHub Desktop。
+
+把舊電腦的資料搬過去：舊電腦跑 `.\scripts\backup.ps1`，把 `backups\<時間>\` 整個資料夾複製到新電腦專案底下，新電腦跑 `.\scripts\restore.ps1 -From backups\<時間>`。
+
+| 腳本 | 做什麼 |
+|------|--------|
+| `scripts/install.ps1` / `.sh` | 第一次啟動（檢查 Docker 與 port、建 .env、build、up） |
+| `scripts/update.ps1` / `.sh` | 更新到 GitHub 最新版：先備份 → `git pull` → 重建 → 顯示版本（`-Tag v1.2.0` 可指定版本，也就是回退） |
+| `scripts/backup.ps1` / `.sh` | 備份資料庫（pg_dump）與圖面檔到 `backups/<時間>/`，保留 30 份；建議用工作排程器每天跑 |
+| `scripts/restore.ps1` | 從某份備份還原（會覆蓋） |
+
+## GitHub 日常用法（你不需要打 git 指令）
+
+- **看改了什麼**：repo 頁面 → Commits；每個 commit 說明對應 CHANGELOG。
+- **CI 綠燈**：Actions 分頁，每次推送自動跑測試與建置，紅燈就不要更新現場。
+- **版本**：Releases / Tags 對應 `VERSION`；現場用 `update.ps1 -Tag vX.Y.Z` 裝指定版，出問題退回上一個 tag。
+- **回饋變 Issue**（可選）：回饋頁匯出的清單可以貼成 Issue，commit 訊息寫 `fixes #12` 會自動關閉。
+- **GitHub Desktop**：想用視窗看差異或手動 commit 時裝它即可，和這裡的 CLI 共用同一組登入。
+- 日常分工：操作者只碰系統畫面；你負責回饋頁、更新與備份；開發（我）負責 commit、CI、發版。
+
 ## 長期維護流程（操作者回饋 → 修改 → 發版）
 
 1. 操作者在系統任何頁面按右下角「💬 意見回饋」，選類型（問題／需求／疑問）寫內容送出；系統自動記下頁面與專案。

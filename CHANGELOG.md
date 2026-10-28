@@ -9,6 +9,8 @@
 - 拆單系統獨立成自己的專案資料夾與 git 版本庫。
 - 意見回饋：每頁右下角按鈕回報問題／需求，管理者在「回饋」頁看、改狀態、匯出清單。
 - 系統內顯示版本號與更新紀錄。
+- GitHub 私有 repo 與 CI（lint、單元測試、compose build）。
+- `scripts/`：install / update / backup / restore（Windows 與 Linux），換電腦部署與每日備份用。
 
 ### 調整
 - 主機資料庫 port 由 15433 改為 15434（15433 已被其他專案使用），網頁仍是 8100。
