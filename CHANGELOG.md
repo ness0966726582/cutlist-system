@@ -11,6 +11,7 @@
 - 系統內顯示版本號與更新紀錄。
 - GitHub 私有 repo 與 CI（lint、單元測試、compose build）。
 - `scripts/`：install / update / backup / restore（Windows 與 Linux），換電腦部署與每日備份用。
+- Release 工作流程：打 `v*` tag 自動建映像推 GHCR 並建 GitHub Release；`deploy/nas/` 提供 Synology DS723+ 用的 compose 與 update / backup / restore 腳本。
 
 ### 調整
 - 主機資料庫 port 由 15433 改為 15434（15433 已被其他專案使用），網頁仍是 8100。

@@ -1,0 +1,79 @@
+name: Release
+
+# 打版本 tag (v1.2.3) 就：建 api / web / db 三個映像推到 GHCR，並建立 GitHub Release (內容取自 CHANGELOG 對應段落)。
+# NAS 端用 deploy/nas/docker-compose.yml 拉這些映像，不需要原始碼與 Git。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 版本號
+        id: v
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "owner=$(echo '${{ env.OWNER }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: api/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/cutlist-api:${{ steps.v.outputs.version }}
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/cutlist-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: web
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/cutlist-web:${{ steps.v.outputs.version }}
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/cutlist-web:latest
+      - name: db
+        uses: docker/build-push-action@v6
+        with:
+          context: db
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/cutlist-db:${{ steps.v.outputs.version }}
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/cutlist-db:latest
+      - name: Release notes (CHANGELOG 對應段落)
+        run: |
+          awk -v ver="${{ steps.v.outputs.version }}" '
+            $0 ~ "^## "ver" " {p=1; print; next}
+            /^## / && p {exit}
+            p {print}' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "v${{ steps.v.outputs.version }}" > notes.md
+          { echo; echo "映像："; echo "- ghcr.io/${{ steps.v.outputs.owner }}/cutlist-api:${{ steps.v.outputs.version }}"; echo "- ghcr.io/${{ steps.v.outputs.owner }}/cutlist-web:${{ steps.v.outputs.version }}"; echo "- ghcr.io/${{ steps.v.outputs.owner }}/cutlist-db:${{ steps.v.outputs.version }}"; } >> notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+          files: |
+            deploy/nas/docker-compose.yml
+            deploy/nas/.env.example
+            deploy/nas/update.sh
+            deploy/nas/backup.sh
+            deploy/nas/restore.sh

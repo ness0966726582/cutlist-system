@@ -4,7 +4,12 @@
 > 版本號在 `VERSION`，每次更新寫 `CHANGELOG.md`（系統內「更新紀錄」頁直接顯示）。
 > 主機 DB port 改為 **15434**（15433 被 ness_db 使用），在 `.env` 設定。
 
-## 換一台電腦部署（Windows / Linux / NAS）
+## 部署到 Synology NAS（DS723+）
+
+不用 Git、不用原始碼：打版本 tag 後 GitHub Actions 會把三個映像推到 GHCR，NAS 只放 `deploy/nas/docker-compose.yml` 拉映像。完整步驟見 [deploy/nas/README.md](deploy/nas/README.md)。
+發版方式：`VERSION` 進號、`CHANGELOG.md` 加段落、`git tag v1.0.1 && git push origin v1.0.1` → Release 工作流程自動建映像與 GitHub Release。
+
+## 換一台電腦部署（Windows / Linux / NAS，原始碼方式）
 
 需要：Docker（Windows 裝 Docker Desktop；Linux 裝 Docker Engine + compose plugin）、能登入 GitHub 的方式（repo 是私有的）。
 

@@ -1,0 +1,43 @@
+# 拆單專案管理系統 — NAS 部署用 (Synology DS723+ Container Manager / 任何 x86 Docker 主機)
+# 不需要原始碼：映像從 GitHub Container Registry 拉。版本在 .env 的 CUTLIST_VERSION。
+# 資料放在同資料夾的 data/ (資料庫、圖面)，方便 Hyper Backup。
+services:
+  db:
+    image: ghcr.io/ness0966726582/cutlist-db:${CUTLIST_VERSION:-latest}
+    container_name: cutlist-db
+    environment:
+      POSTGRES_DB: cutlist
+      POSTGRES_USER: cutlist
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?請在 .env 設定 POSTGRES_PASSWORD}
+      TZ: Asia/Taipei
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cutlist -d cutlist"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/ness0966726582/cutlist-api:${CUTLIST_VERSION:-latest}
+    container_name: cutlist-api
+    environment:
+      DATABASE_URL: postgresql://cutlist:${POSTGRES_PASSWORD}@db:5432/cutlist
+      FILES_DIR: /data/files
+      TZ: Asia/Taipei
+    volumes:
+      - ./data/files:/data/files
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/ness0966726582/cutlist-web:${CUTLIST_VERSION:-latest}
+    container_name: cutlist-web
+    ports:
+      - "${WEB_PORT:-8100}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
