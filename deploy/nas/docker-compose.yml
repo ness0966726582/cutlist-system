@@ -1,4 +1,4 @@
-# 拆單專案管理系統 — NAS 部署用 (Synology DS723+ Container Manager / 任何 x86 Docker 主機)
+# 拆單專案管理系統 — NAS 部署用 (Synology DS223 / DS723+ Container Manager，amd64 與 arm64 皆可)
 # 不需要原始碼：映像從 GitHub Container Registry 拉。版本在 .env 的 CUTLIST_VERSION。
 # 資料放在同資料夾的 data/ (資料庫、圖面)，方便 Hyper Backup。
 services:
@@ -14,10 +14,11 @@ services:
     volumes:
       - ./data/db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cutlist -d cutlist"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U cutlist -d cutlist"]   # 走 TCP：第一次初始化時的暫時伺服器只聽 unix socket，不會被誤判為就緒
       interval: 5s
       timeout: 3s
       retries: 30
+      start_period: 20s
     restart: unless-stopped
 
   api:

@@ -26,17 +26,20 @@ mkdir -p data/db data/files
 # 3. 啟動
 docker compose up -d
 echo "等待資料庫就緒..."
-i=0; until docker exec cutlist-db pg_isready -U cutlist -d cutlist >/dev/null 2>&1; do i=$((i+1)); [ $i -gt 60 ] && { echo "資料庫 60 秒內未就緒"; docker compose ps; exit 1; }; sleep 2; done
-sleep 3
+# 用 TCP (-h 127.0.0.1) 檢查：PostgreSQL 第一次初始化會先開一個只聽 unix socket 的暫時伺服器跑 init SQL，
+# 之後才重啟成正式伺服器；若用預設 socket 檢查會在暫時伺服器時就誤判就緒，接著 pg_restore 失敗 (DS223 上實際發生過)
+dbq() { docker exec cutlist-db sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -h 127.0.0.1 -U cutlist -d cutlist -At -c \"$1\"" 2>/dev/null; }
+i=0; until dbq "select count(*) from projects" >/dev/null; do i=$((i+1)); [ $i -gt 120 ] && { echo "資料庫 240 秒內未就緒"; docker compose ps; docker logs --tail 20 cutlist-db; exit 1; }; sleep 2; done
 
 # 4. 第一次安裝且附帶備份 → 自動還原（只在資料庫沒有任何專案時）
 LATEST=$(ls -1d backups/*/ 2>/dev/null | sort | tail -1)
 if [ -n "$LATEST" ] && [ -f "$LATEST/db.dump" ]; then
-  N=$(docker exec cutlist-db psql -U cutlist -d cutlist -At -c "select count(*) from projects" 2>/dev/null || echo 0)
-  if [ "${N:-0}" = "0" ]; then
+  N=$(dbq "select count(*) from projects" || echo err)
+  if [ "$N" = "0" ]; then
     echo "資料庫是空的，從 $LATEST 還原..."
     docker cp "$LATEST/db.dump" cutlist-db:/tmp/db.dump
-    docker exec cutlist-db sh -c "pg_restore -U cutlist -d cutlist --clean --if-exists /tmp/db.dump; rm -f /tmp/db.dump" || true
+    docker exec cutlist-db sh -c "PGPASSWORD=\$POSTGRES_PASSWORD pg_restore -h 127.0.0.1 -U cutlist -d cutlist --clean --if-exists /tmp/db.dump; rm -f /tmp/db.dump" || true
+    [ "$(dbq "select count(*) from projects")" = "0" ] && echo "警告：還原後仍沒有專案，請看上面的 pg_restore 訊息；可再手動 sh restore.sh $LATEST"
     [ -f "$LATEST/files.tgz" ] && tar xzf "$LATEST/files.tgz" -C data/files
     docker compose restart api >/dev/null
     echo "還原完成。"
