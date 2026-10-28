@@ -1,8 +1,25 @@
 # 在 Synology DS723+ 部署拆單系統
 
-不需要在 NAS 裝 Git、不需要原始碼。GitHub 每次發版會把映像推到 GitHub Container Registry（GHCR），NAS 只拉映像。
+兩條路都不需要在 NAS 裝 Git、不需要原始碼：
 
-## 第一次安裝（約 15 分鐘）
+- **A. 離線安裝包（最簡單，建議第一次用）**：Windows 電腦跑 `.\scripts\make-nas-bundle.ps1` 產生 `dist\cutlist-nas-<版本>`（含映像 tar、compose、腳本、目前資料備份，約 220 MB），整包上傳到 NAS 跑一個指令。不用 GitHub token。
+- **B. 從 GHCR 拉映像**：之後更新用。GitHub 每次發版把映像推到 GitHub Container Registry，NAS `update.sh` 拉新版。需要一次 `docker login ghcr.io`。
+
+## A. 離線安裝包（約 10 分鐘）
+
+1. 套件中心 → 安裝「Container Manager」；控制台 → 終端機 & SNMP → 啟動 SSH。
+2. File Station → `docker` 共用資料夾下建 `cutlist`，把 `cutlist-nas-<版本>` 資料夾裡的**全部內容**上傳進去（或上傳 zip 後在 File Station 解壓縮）。
+3. Windows 開 PowerShell：`ssh 管理員帳號@NAS的IP`，然後
+
+```bash
+cd /volume1/docker/cutlist && sudo sh setup.sh
+```
+
+   `setup.sh` 會：載入映像 → 產生 `.env`（隨機資料庫密碼）→ 啟動三個容器 → 偵測資料庫是空的就自動還原附帶的備份 → 印出網址。
+4. 開 `http://NAS的IP:8100`，應該直接看到原本的專案（例如新竹金山街）。
+5. 可以關掉 SSH；之後更新再開。
+
+## B. 從 GHCR 安裝 / 更新（約 15 分鐘）
 
 **1. NAS 準備**
 - 套件中心 → 安裝「Container Manager」。
@@ -44,7 +61,7 @@ cd /volume1/docker/cutlist && sudo sh restore.sh backups/<時間>
 
 | 事情 | 做法 |
 |------|------|
-| 更新到新版 | SSH：`cd /volume1/docker/cutlist && sudo sh update.sh`（自動先備份；`sudo sh update.sh 1.0.1` 指定版本，也可退回舊版） |
+| 更新到新版 | 有 GHCR 登入：SSH `cd /volume1/docker/cutlist && sudo sh update.sh`（自動先備份；`sudo sh update.sh 1.0.1` 指定版本，也可退回舊版）。沒登入：Windows 重新跑 `make-nas-bundle.ps1 -NoData`，只把新的 `images-<版本>.tar` 上傳覆蓋，再 `sudo sh setup.sh`（資料不會動） |
 | 每日備份 | 控制台 → 任務排程器 → 新增 → 排程的任務 → 使用者定義的指令碼：使用者 root，每天 02:00，指令 `sh /volume1/docker/cutlist/backup.sh`。備份在 `backups/`，再用 Hyper Backup 整個 `/volume1/docker/cutlist` 備到外接碟或雲端 |
 | 看狀態 | Container Manager → 容器，三個 cutlist-* 都是執行中；或 `sudo docker compose ps` |
 | 看版本 | 系統右上角版本號；或 `cat data/../.env` 的 CUTLIST_VERSION |

@@ -1,5 +1,6 @@
 .env
 backups/
+dist/
 .pytest_cache/
 .ruff_cache/
 __pycache__/

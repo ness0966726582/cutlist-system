@@ -6,7 +6,7 @@
 
 ## 部署到 Synology NAS（DS723+）
 
-不用 Git、不用原始碼：打版本 tag 後 GitHub Actions 會把三個映像推到 GHCR，NAS 只放 `deploy/nas/docker-compose.yml` 拉映像。完整步驟見 [deploy/nas/README.md](deploy/nas/README.md)。
+最簡單：`.\scripts\make-nas-bundle.ps1` 產生離線安裝包 `dist\cutlist-nas-<版本>`（映像 + compose + 腳本 + 目前資料），上傳到 NAS 跑 `sudo sh setup.sh` 即完成，不需 GitHub 登入。之後更新可走 GHCR（打 tag 自動建映像）或重做安裝包。完整步驟見 [deploy/nas/README.md](deploy/nas/README.md)。
 發版方式：`VERSION` 進號、`CHANGELOG.md` 加段落、`git tag v1.0.1 && git push origin v1.0.1` → Release 工作流程自動建映像與 GitHub Release。
 
 ## 換一台電腦部署（Windows / Linux / NAS，原始碼方式）
