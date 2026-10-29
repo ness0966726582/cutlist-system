@@ -136,3 +136,6 @@ button.small { padding: 2px 6px; font-size: 12px; }
 .fb-list li { margin: 6px 0; line-height: 1.5; }
 .tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #e2e8f0; color: #334155; margin-right: 2px; }
 .tag.ok { background: #dcfce7; color: #166534; }
+
+/* 1.1.0 回饋 #5：料單「類別」欄預設隱藏 */
+table.parts.hidecat th:nth-child(3), table.parts.hidecat td:nth-child(3) { display: none; }

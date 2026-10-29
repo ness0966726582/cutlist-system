@@ -790,6 +790,10 @@ class CabinetIn(BaseModel):
     drawing_page: Optional[int] = None
     drawing_label: Optional[str] = None
     generate_default_parts: bool = True
+    template_id: Optional[int] = None      # 櫃體範本 (基礎資料 → 櫃體範本)；None = 內建標準櫃
+    with_inner: bool = True                # 產生內部隔板 (中立板 / 活隔 / 固隔)
+    with_doors: bool = True                # 產生門片 (左 / 右門板)
+    door_color_code: Optional[str] = None  # 門片色號；空 = 同櫃體色號
 
 
 @app.post("/api/projects/{pid}/cabinets", status_code=201)
@@ -803,13 +807,15 @@ def create_cabinet(pid: int, body: CabinetIn):
         if q1(c, "SELECT 1 FROM cabinets WHERE project_id=%s AND cabinet_no=%s", (pid, no)):
             raise HTTPException(400, f"櫃號 {no} 已存在，請改用其他櫃號")
         note = body.note if body.note else rules.cabinet_note(body.name)
-        cb = q1(c, """INSERT INTO cabinets(project_id,cabinet_no,name,height,depth,width,batch,note,sort,color_code,drawing_attachment_id,drawing_page,drawing_label)
-                      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+        cb = q1(c, """INSERT INTO cabinets(project_id,cabinet_no,name,height,depth,width,batch,note,sort,color_code,drawing_attachment_id,drawing_page,drawing_label,door_color_code)
+                      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
                 (pid, no, body.name, body.height, body.depth, body.width, body.batch, note, mx["s"] + 1, body.color_code,
-                 body.drawing_attachment_id, body.drawing_page, body.drawing_label))
+                 body.drawing_attachment_id, body.drawing_page, body.drawing_label, body.door_color_code or None))
         if body.generate_default_parts:
-            for i, (cat, name, L, W, T) in enumerate(rules.default_parts(body.height, body.depth, body.width, p["board_thickness"]), start=1):
-                _insert_part(c, cb["id"], no, i, cat, name, L, W, T, 1, body.color_code, None, "A")
+            rows = _template_rows(c, body.template_id, body.height, body.depth, body.width, p["board_thickness"], body.with_inner, body.with_doors)
+            for i, (cat, name, L, W, T, qty, is_door) in enumerate(rows, start=1):
+                color = (body.door_color_code or body.color_code) if is_door else body.color_code
+                _insert_part(c, cb["id"], no, i, cat, name, L, W, T, qty, color, None, "A")
             _recalc_cabinet(c, cb["id"])
         c.commit()
         cb["parts"] = _parts_with_calc(c, cb["id"])
@@ -839,9 +845,9 @@ def update_cabinet(cid: int, body: CabinetIn):
         # 備註：使用者留空且櫃名有規則 (水槽櫃/爐台櫃/油機吊櫃) 時自動帶入
         note = body.note if body.note else rules.cabinet_note(body.name)
         row = q1(c, """UPDATE cabinets SET name=%s,cabinet_no=%s,height=%s,depth=%s,width=%s,batch=%s,note=%s,color_code=%s,
-                       drawing_attachment_id=%s,drawing_page=%s,drawing_label=%s WHERE id=%s RETURNING *""",
+                       drawing_attachment_id=%s,drawing_page=%s,drawing_label=%s,door_color_code=%s WHERE id=%s RETURNING *""",
                  (body.name, no, body.height, body.depth, body.width, body.batch, note, body.color_code,
-                  body.drawing_attachment_id, body.drawing_page, body.drawing_label, cid))
+                  body.drawing_attachment_id, body.drawing_page, body.drawing_label, body.door_color_code or None, cid))
         if no != cb["cabinet_no"]:
             c.execute("UPDATE parts SET part_no=%s*1000+seq WHERE cabinet_id=%s", (no, cid))
         c.commit()
@@ -865,10 +871,10 @@ def duplicate_cabinet(cid: int):
             raise HTTPException(404)
         mx = q1(c, "SELECT coalesce(max(cabinet_no),0) AS m, coalesce(max(sort),0) AS s FROM cabinets WHERE project_id=%s", (cb["project_id"],))
         no = mx["m"] + 1
-        new = q1(c, """INSERT INTO cabinets(project_id,cabinet_no,name,height,depth,width,batch,note,sort,color_code,drawing_attachment_id,drawing_page,drawing_label)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL) RETURNING *""",
+        new = q1(c, """INSERT INTO cabinets(project_id,cabinet_no,name,height,depth,width,batch,note,sort,color_code,drawing_attachment_id,drawing_page,drawing_label,door_color_code)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s) RETURNING *""",
                  (cb["project_id"], no, cb["name"], cb["height"], cb["depth"], cb["width"], cb["batch"], cb["note"], mx["s"] + 1, cb["color_code"],
-                  cb["drawing_attachment_id"], cb["drawing_page"]))
+                  cb["drawing_attachment_id"], cb["drawing_page"], cb["door_color_code"]))
         c.execute("""INSERT INTO parts(cabinet_id,part_no,seq,category,name,length,edge_l,width,edge_w,thickness,qty,color_code,
                                        mark_p,mark_q,mark_r,remark,reminder,status_code,manual_fields)
                      SELECT %s, %s*1000+seq, seq, category,name,length,edge_l,width,edge_w,thickness,qty,color_code,
@@ -881,23 +887,170 @@ def duplicate_cabinet(cid: int):
 
 class ApplyColorIn(BaseModel):
     color_code: Optional[str] = None
+    door_color_code: Optional[str] = None   # 門片 / 面板 (類別「外部」或名稱含「門」) 用這個色；空 = 同櫃身
     only_empty: bool = False
     skip_backboard: bool = False  # true = 背板 / 抽底 (4mm) 不套用
 
 
 @app.post("/api/cabinets/{cid}/apply-color")
 def apply_color(cid: int, body: ApplyColorIn):
+    """套用色號：櫃身色給一般板材，門片色 (有填時) 給門片 / 面板類。回饋 #2。"""
+    door = body.door_color_code or body.color_code
     with conn() as c:
-        sql = "UPDATE parts SET color_code=%s WHERE cabinet_id=%s AND coalesce(category,'') NOT LIKE '%%五金'"
-        params: list = [body.color_code, cid]
-        if body.only_empty:
-            sql += " AND color_code IS NULL"
-        if body.skip_backboard:
-            sql += " AND name <> '背板' AND name <> '抽底'"
-        c.execute(sql, params)
-        c.execute("UPDATE cabinets SET color_code=%s WHERE id=%s", (body.color_code, cid))
+        parts = qa(c, "SELECT id, name, category, color_code FROM parts WHERE cabinet_id=%s AND coalesce(category,'') NOT LIKE '%%五金'", (cid,))
+        for pt in parts:
+            if body.only_empty and pt["color_code"]:
+                continue
+            if body.skip_backboard and pt["name"] in ("背板", "抽底"):
+                continue
+            c.execute("UPDATE parts SET color_code=%s WHERE id=%s", (door if _is_door(pt["category"], pt["name"]) else body.color_code, pt["id"]))
+        c.execute("UPDATE cabinets SET color_code=%s, door_color_code=%s WHERE id=%s", (body.color_code, body.door_color_code or None, cid))
         c.commit()
         return _parts_with_calc(c, cid)
+
+# ───────────────────────── 櫃體範本 (回饋 #3) ─────────────────────────
+class TemplateIn(BaseModel):
+    name: str = Field(min_length=1)
+    note: Optional[str] = None
+    sort: Optional[int] = None
+
+
+class TemplatePartIn(BaseModel):
+    grp: str = "base"            # base / inner / door
+    category: Optional[str] = None
+    name: str = Field(min_length=1)
+    length_expr: Optional[str] = None
+    width_expr: Optional[str] = None
+    thickness_expr: Optional[str] = "t"
+    qty: int = Field(default=1, ge=1)
+    sort: Optional[int] = None
+
+
+def _check_tpl_part(body: TemplatePartIn):
+    if body.grp not in ("base", "inner", "door"):
+        raise HTTPException(400, "grp 需為 base / inner / door")
+    for f in ("length_expr", "width_expr", "thickness_expr"):
+        err = rules.check_dim_expr(getattr(body, f))
+        if err:
+            raise HTTPException(400, f"{f}：{err}")
+
+
+def _templates(c):
+    tpls = qa(c, "SELECT * FROM cabinet_templates ORDER BY sort, id")
+    parts = qa(c, "SELECT * FROM cabinet_template_parts ORDER BY template_id, sort, id")
+    by: dict = {}
+    for r in parts:
+        by.setdefault(r["template_id"], []).append(r)
+    for t in tpls:
+        t["parts"] = by.get(t["id"], [])
+    return tpls
+
+
+@app.get("/api/master/cabinet-templates")
+def list_templates():
+    with conn() as c:
+        return _templates(c)
+
+
+@app.post("/api/master/cabinet-templates", status_code=201)
+def create_template(body: TemplateIn):
+    with conn() as c:
+        if q1(c, "SELECT 1 FROM cabinet_templates WHERE name=%s", (body.name.strip(),)):
+            raise HTTPException(409, "範本名稱已存在")
+        q1(c, "INSERT INTO cabinet_templates(name, note, sort) VALUES (%s,%s,coalesce(%s,(SELECT coalesce(max(sort),0)+1 FROM cabinet_templates))) RETURNING *",
+           (body.name.strip(), body.note, body.sort))
+        c.commit()
+        return _templates(c)
+
+
+@app.put("/api/master/cabinet-templates/{tid}")
+def update_template(tid: int, body: TemplateIn):
+    with conn() as c:
+        if not q1(c, "UPDATE cabinet_templates SET name=%s, note=%s, sort=coalesce(%s,sort) WHERE id=%s RETURNING id", (body.name.strip(), body.note, body.sort, tid)):
+            raise HTTPException(404)
+        c.commit()
+        return _templates(c)
+
+
+@app.delete("/api/master/cabinet-templates/{tid}")
+def delete_template(tid: int):
+    with conn() as c:
+        c.execute("DELETE FROM cabinet_templates WHERE id=%s", (tid,))
+        c.commit()
+        return _templates(c)
+
+
+@app.post("/api/master/cabinet-templates/{tid}/duplicate", status_code=201)
+def duplicate_template(tid: int):
+    with conn() as c:
+        t = q1(c, "SELECT * FROM cabinet_templates WHERE id=%s", (tid,))
+        if not t:
+            raise HTTPException(404)
+        name = t["name"] + " 複本"
+        i = 2
+        while q1(c, "SELECT 1 FROM cabinet_templates WHERE name=%s", (name,)):
+            name = f"{t['name']} 複本{i}"; i += 1
+        new = q1(c, "INSERT INTO cabinet_templates(name, note, sort) VALUES (%s,%s,(SELECT coalesce(max(sort),0)+1 FROM cabinet_templates)) RETURNING *", (name, t["note"]))
+        c.execute("""INSERT INTO cabinet_template_parts(template_id, sort, grp, category, name, length_expr, width_expr, thickness_expr, qty)
+                     SELECT %s, sort, grp, category, name, length_expr, width_expr, thickness_expr, qty FROM cabinet_template_parts WHERE template_id=%s""", (new["id"], tid))
+        c.commit()
+        return _templates(c)
+
+
+@app.post("/api/master/cabinet-templates/{tid}/parts", status_code=201)
+def add_template_part(tid: int, body: TemplatePartIn):
+    _check_tpl_part(body)
+    with conn() as c:
+        if not q1(c, "SELECT 1 FROM cabinet_templates WHERE id=%s", (tid,)):
+            raise HTTPException(404)
+        c.execute("""INSERT INTO cabinet_template_parts(template_id, sort, grp, category, name, length_expr, width_expr, thickness_expr, qty)
+                     VALUES (%s, coalesce(%s,(SELECT coalesce(max(sort),0)+1 FROM cabinet_template_parts WHERE template_id=%s)), %s,%s,%s,%s,%s,%s,%s)""",
+                  (tid, body.sort, tid, body.grp, body.category, body.name.strip(), body.length_expr or None, body.width_expr or None, body.thickness_expr or "t", body.qty))
+        c.commit()
+        return _templates(c)
+
+
+@app.put("/api/master/cabinet-template-parts/{pid}")
+def update_template_part(pid: int, body: TemplatePartIn):
+    _check_tpl_part(body)
+    with conn() as c:
+        if not q1(c, """UPDATE cabinet_template_parts SET grp=%s, category=%s, name=%s, length_expr=%s, width_expr=%s, thickness_expr=%s, qty=%s, sort=coalesce(%s,sort)
+                        WHERE id=%s RETURNING id""",
+                  (body.grp, body.category, body.name.strip(), body.length_expr or None, body.width_expr or None, body.thickness_expr or "t", body.qty, body.sort, pid)):
+            raise HTTPException(404)
+        c.commit()
+        return _templates(c)
+
+
+@app.delete("/api/master/cabinet-template-parts/{pid}")
+def delete_template_part(pid: int):
+    with conn() as c:
+        c.execute("DELETE FROM cabinet_template_parts WHERE id=%s", (pid,))
+        c.commit()
+        return _templates(c)
+
+
+def _template_rows(c, template_id, H, D, W, t, with_inner, with_doors):
+    """依範本產生 (類別, 名稱, 長, 寬, 厚, 數量, 是否門片)；找不到範本就用內建標準櫃。"""
+    rows = qa(c, "SELECT * FROM cabinet_template_parts WHERE template_id=%s ORDER BY sort, id", (template_id,)) if template_id else []
+    if not rows:
+        return [(cat, name, L, W_, T, 1, cat == "外部") for (cat, name, L, W_, T) in rules.default_parts(H, D, W, t)
+                if (with_inner or cat != "內部") and (with_doors or cat != "外部")]
+    out = []
+    for r in rows:
+        if r["grp"] == "inner" and not with_inner:
+            continue
+        if r["grp"] == "door" and not with_doors:
+            continue
+        out.append((r["category"], r["name"], rules.eval_dim(r["length_expr"], H, D, W, t), rules.eval_dim(r["width_expr"], H, D, W, t),
+                    rules.eval_dim(r["thickness_expr"], H, D, W, t) if r["thickness_expr"] else t, r["qty"] or 1, r["grp"] == "door" or r["category"] == "外部"))
+    return out
+
+
+def _is_door(category, name) -> bool:
+    """門片 / 面板類板材 (套門片色號用)：類別「外部」或名稱含「門」。"""
+    return (category or "") == "外部" or "門" in (name or "")
+
 
 
 # ───────────────────────── 板材 ─────────────────────────
@@ -1320,6 +1473,42 @@ def project_labels(pid: int, include_hardware: bool = False):
                     "joint_type": p["joint_type"],   # 標籤列印版 AB 結合器 (料單 L3)
                     "edge_l_first": w, "edge_l_flag": x, "edge_w_first": y, "edge_w_last": z})
     return out
+
+
+@app.get("/api/projects/{pid}/labels.xlsx")
+def project_labels_xlsx(pid: int):
+    """標籤列印版 Excel (回饋 #6)：欄位與 CSV / 原 Excel「標籤列印版」相同，給標籤機或列印用。"""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    rows = project_labels(pid)
+    with conn() as c:
+        p = q1(c, "SELECT order_no FROM projects WHERE id=%s", (pid,))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "標籤列印版"
+    head = ["訂單", "案場", "櫃號", "櫃名", "專案編號", "板材名稱", "長", "封邊", "寬", "封邊", "厚", "生產數量", "板材廠商", "板材色號", "封邊色號",
+            "備註1", "備註2", "備註3", "備註4", "狀態", "批次", "長封邊首碼", "長封邊A", "寬封邊首碼", "寬封邊尾碼", "日期", "結合器"]
+    ws.append(head)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for r in rows:
+        ws.append([r["order_no"], r["site_name"], r["cabinet_no"], r["cabinet_name"], r["part_no"], r["name"],
+                   _num(r["length"]), r["edge_l"], _num(r["width"]), r["edge_w"], _num(r["thickness"]), r["qty"], r["vendor"], r["color_code"], r["edge_code"],
+                   *r["marks"], r["status"], r["batch"], r["edge_l_first"], r["edge_l_flag"], r["edge_w_first"], r["edge_w_last"],
+                   str(r["delivery_date"]) if r["delivery_date"] else None, r["joint_type"]])
+    for col, w in zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", [12, 14, 6, 14, 10, 14, 8, 6, 8, 6, 6, 8, 10, 10, 10, 12, 10, 8, 10, 6, 6, 6, 6, 6, 6, 12]):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A2"
+    buf = BytesIO()
+    wb.save(buf)
+    fname = f"labels_{p['order_no']}.xlsx"
+    return Response(buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"})
+
+
+def _num(v):
+    return float(v) if v is not None else None
 
 
 @app.get("/api/projects/{pid}/serials")

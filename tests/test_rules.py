@@ -50,3 +50,17 @@ def test_default_parts_use_board_thickness():
 def test_norm_edge_strips_fullwidth_space():
     assert rules.norm_edge("A　") == "A"
     assert rules.norm_edge(None) == ""
+
+
+def test_eval_dim_formulas():
+    from decimal import Decimal
+    from app import rules
+    assert rules.eval_dim("W-2*t", 700, 560, 900, Decimal("17.5")) == Decimal("865.0")
+    assert rules.eval_dim("W/2-4", None, None, 900, 18) == Decimal("446.0")
+    assert rules.eval_dim("H-22", None, 560, 900, 18) is None      # 用到的變數沒值 → 留空
+    assert rules.eval_dim("", 1, 1, 1, 1) is None and rules.eval_dim(None, 1, 1, 1, 1) is None
+    assert rules.eval_dim("120", 1, 1, 1, 1) == Decimal("120.0")
+    assert rules.check_dim_expr("W-2*t") is None
+    assert rules.check_dim_expr("X+1")                 # 不認得的變數
+    assert rules.check_dim_expr("__import__('os')")    # 不是算式
+    assert rules.check_dim_expr("W/0")                 # 除以 0

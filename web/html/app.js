@@ -1,6 +1,6 @@
 /* 拆單專案管理 ─ 單頁前端 (vanilla JS, hash routing) */
 const $app = document.getElementById('app');
-const state = { catalog: null, lookups: null, customers: null, colors: null, collapsed: new Set(), tab: 'parts' };
+const state = { catalog: null, lookups: null, customers: null, colors: null, templates: null, collapsed: new Set(), tab: 'parts' };
 const AUTO_FIELDS = ['edge_l', 'edge_w', 'mark_p', 'mark_q', 'mark_r', 'reminder'];
 const STATUS = { draft: '草稿', confirmed: '已確認', producing: '生產中', done: '完成' };
 
@@ -57,7 +57,10 @@ async function ensureMaster() {
   if (!state.lookups) state.lookups = await api('/master/lookups');
   if (!state.customers) state.customers = await api('/customers');
   if (!state.colors) state.colors = await api('/master/colors?limit=3000');
+  if (!state.templates) state.templates = await api('/master/cabinet-templates');
 }
+// 料單「類別」欄預設隱藏 (回饋 #5)，可在櫃體導覽列勾選顯示
+function showCat() { try { return localStorage.getItem('show-cat') === '1'; } catch (e) { return false; } }
 const allPartNames = () => [...new Set(Object.values(state.catalog).flat())];
 const colorDatalist = () => `<datalist id="colors">${state.colors.map((c) => `<option value="${esc(c.code)}">${esc(c.board_name || '')} ${esc(c.vendor || '')}</option>`).join('')}</datalist>`;
 const nameDatalist = () => `<datalist id="partnames">${allPartNames().map((n) => `<option value="${esc(n)}">`).join('')}</datalist>`;
@@ -429,21 +432,26 @@ function renderParts(body, p) {
     <aside class="nav card compact">
       <div class="row" style="justify-content:space-between"><b>櫃體 (${p.cabinets.length})</b>
         <span><button class="link" id="expall">展開</button><button class="link" id="colall">收合</button></span></div>
+      <label class="chk small muted" title="料單表格的「類別」欄平常用不到，預設隱藏；類別仍會自動判斷"><input type="checkbox" id="showcat" ${showCat() ? 'checked' : ''}> 顯示類別欄</label>
       <ul>${p.cabinets.map((cb) => `<li><a href="#cab-${cb.id}" data-nav="${cb.id}"><span class="no">${cb.cabinet_no}</span> ${esc(cb.name)} <span class="muted">${cb.parts.filter((x) => !(x.category || '').endsWith('五金')).reduce((a, x) => a + x.qty, 0)}片</span></a></li>`).join('')}</ul>
       <form id="newcab" class="newcab">
         <b>新增櫃體</b>
         <input name="name" required placeholder="櫃體名稱 (例：玄關收納疊櫃)" list="cabnames"><datalist id="cabnames">${[...new Set(p.cabinets.map((c) => c.name))].map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
         <div class="row"><label>櫃高 <input class="num" name="height" type="number" step="0.1"></label><label>櫃深 <input class="num" name="depth" type="number" step="0.1"></label><label>櫃寬 <input class="num" name="width" type="number" step="0.1"></label></div>
-        <div class="row"><label>色號 <input class="num" name="color_code" list="colors"></label><label>櫃號 <input class="sm" name="cabinet_no" type="number" placeholder="自動"></label><label>批次 <input class="sm" name="batch" type="number" value="1"></label></div>
-        <label class="chk"><input type="checkbox" name="gen" checked> 自動產生桶身/內部/門板標準板件</label>
+        <div class="row"><label>櫃身色號 <input class="num" name="color_code" list="colors"></label><label>門片色號 <input class="num" name="door_color_code" list="colors" placeholder="同櫃身"></label></div>
+        <div class="row"><label>櫃號 <input class="sm" name="cabinet_no" type="number" placeholder="自動"></label><label>批次 <input class="sm" name="batch" type="number" value="1"></label></div>
+        <label class="chk"><input type="checkbox" name="gen" checked> 自動產生標準板件，類型：</label>
+        <select name="template_id" style="width:100%" title="基礎資料 → 櫃體範本 可調整每種類型的板件與尺寸公式">${(state.templates || []).map((t) => `<option value="${t.id}" title="${esc(t.note || '')}">${esc(t.name)}</option>`).join('') || '<option value="">內建標準櫃</option>'}</select>
+        <div class="row"><label class="chk"><input type="checkbox" name="with_doors" checked> 有門片</label><label class="chk"><input type="checkbox" name="with_inner" checked> 內部隔板（中立板/活隔/固隔）</label></div>
         <button class="primary">新增櫃體</button>
       </form>
     </aside>
     <div class="main">
       ${p.cabinets.map((cb) => cabinetCard(cb, cats, p)).join('') || '<div class="card muted">尚無櫃體：左側新增，或回專案列表用 Excel 匯入。</div>'}
     </div>
-  </div>${colorDatalist()}${nameDatalist()}`;
+  </div>${colorDatalist()}${nameDatalist()}<datalist id="remark4">${(state.lookups['備註4'] || []).map((v) => `<option value="${esc(v)}">`).join('')}</datalist>`;
 
+  body.querySelector('#showcat').onchange = (e) => { try { localStorage.setItem('show-cat', e.target.checked ? '1' : '0'); } catch (err) { /* ignore */ } renderParts(body, p); };
   body.querySelector('#expall').onclick = () => { state.collapsed.clear(); renderParts(body, p); };
   body.querySelector('#colall').onclick = () => { p.cabinets.forEach((c) => state.collapsed.add(c.id)); renderParts(body, p); };
   body.querySelectorAll('[data-nav]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); state.collapsed.delete(+a.dataset.nav); renderParts(body, p); document.getElementById('cab-' + a.dataset.nav)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
@@ -451,7 +459,7 @@ function renderParts(body, p) {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     try {
-      await api(`/projects/${p.id}/cabinets`, { method: 'POST', body: { name: f.name.trim(), cabinet_no: n0(f.cabinet_no), height: n0(f.height), depth: n0(f.depth), width: n0(f.width), batch: +f.batch || 1, color_code: f.color_code || null, generate_default_parts: !!f.gen } });
+      await api(`/projects/${p.id}/cabinets`, { method: 'POST', body: { name: f.name.trim(), cabinet_no: n0(f.cabinet_no), height: n0(f.height), depth: n0(f.depth), width: n0(f.width), batch: +f.batch || 1, color_code: f.color_code || null, door_color_code: f.door_color_code || null, generate_default_parts: !!f.gen, template_id: n0(f.template_id), with_doors: !!f.with_doors, with_inner: !!f.with_inner } });
       toast('已新增櫃體'); pageProject(p.id, 'parts');
     } catch (err) { toast(err.message, true); }
   };
@@ -485,16 +493,17 @@ function wireCabinet(body, p, cb) {
     const d = Object.fromEntries(new FormData(form));
     const [aid, pg] = (d.drawing || '').split(':');
     try {
-      await api('/cabinets/' + cb.id, { method: 'PUT', body: { name: d.name.trim(), cabinet_no: n0(d.cabinet_no), height: n0(d.height), depth: n0(d.depth), width: n0(d.width), batch: +d.batch || 1, note: d.note || null, color_code: d.color_code || null, drawing_attachment_id: n0(aid), drawing_page: n0(pg), drawing_label: d.drawing_label || null, generate_default_parts: false } });
+      await api('/cabinets/' + cb.id, { method: 'PUT', body: { name: d.name.trim(), cabinet_no: n0(d.cabinet_no), height: n0(d.height), depth: n0(d.depth), width: n0(d.width), batch: +d.batch || 1, note: d.note || null, color_code: d.color_code || null, door_color_code: d.door_color_code || null, drawing_attachment_id: n0(aid), drawing_page: n0(pg), drawing_label: d.drawing_label || null, generate_default_parts: false } });
       toast('櫃體已更新'); pageProject(p.id, 'parts');
     } catch (err) { toast(err.message, true); }
   };
   q('[data-dup]').forEach((b) => (b.onclick = async () => { try { const n = await api(`/cabinets/${cb.id}/duplicate`, { method: 'POST' }); toast(`已複製為櫃號 ${n.cabinet_no}`); pageProject(p.id, 'parts'); } catch (err) { toast(err.message, true); } }));
   q('[data-applycolor]').forEach((b) => (b.onclick = async () => {
     const code = form.querySelector('[name=color_code]').value.trim();
-    if (!code) return toast('請先填櫃體色號', true);
-    const skip = !confirm(`把色號 ${code} 套用到此櫃全部板材？\n（按「取消」則只套到板材，背板/抽底維持不變）`) ;
-    try { await api(`/cabinets/${cb.id}/apply-color`, { method: 'POST', body: { color_code: code, only_empty: false, skip_backboard: skip } }); refreshCabinet(body, p, cb.id); }
+    const door = form.querySelector('[name=door_color_code]').value.trim();
+    if (!code) return toast('請先填櫃身色號', true);
+    const skip = !confirm(`櫃身 ${code}${door ? `、門片 ${door}` : ''} 套用到此櫃全部板材？\n（按「取消」則背板/抽底維持不變，其餘照套）`);
+    try { await api(`/cabinets/${cb.id}/apply-color`, { method: 'POST', body: { color_code: code, door_color_code: door || null, only_empty: false, skip_backboard: skip } }); toast(door ? '已套用：櫃身與門片分色' : '已套用色號'); refreshCabinet(body, p, cb.id); }
     catch (err) { toast(err.message, true); }
   }));
   q('[data-view]').forEach((b) => (b.onclick = () => { const [aid, pg] = b.dataset.view.split(':'); openViewer(+aid, +pg || 1); }));
@@ -538,7 +547,11 @@ function wireCabinet(body, p, cb) {
   });
 }
 const ORDER = ['name', 'category', 'length', 'edge_l', 'width', 'edge_w', 'thickness', 'qty', 'color_code', 'mark_p', 'mark_q', 'mark_r', 'remark', 'reminder', 'status_code'];
-function nextInput(tr, name) { if (!tr) return null; const i = ORDER.indexOf(name); return i >= 0 && i + 1 < ORDER.length ? tr.querySelector(`[name=${ORDER[i + 1]}]`) : null; }
+function nextInput(tr, name) {
+  if (!tr) return null;
+  for (let i = ORDER.indexOf(name) + 1; i > 0 && i < ORDER.length; i++) { const el = tr.querySelector(`[name=${ORDER[i]}]`); if (el && el.offsetParent !== null) return el; }
+  return null;
+}
 function findPart(p, id) { for (const cb of p.cabinets) for (const x of cb.parts) if (x.id === id) return x; return null; }
 
 function cabinetCard(cb, cats, p) {
@@ -560,8 +573,9 @@ function cabinetCard(cb, cats, p) {
       <label>櫃深 <input class="num" name="depth" type="number" step="0.1" value="${cb.depth ?? ''}"></label>
       <label>櫃寬 <input class="num" name="width" type="number" step="0.1" value="${cb.width ?? ''}"></label>
       <label>批次 <input class="sm" name="batch" type="number" value="${cb.batch}"></label>
-      <label>櫃體色號 <input class="num" name="color_code" list="colors" value="${esc(cb.color_code || '')}"></label>
-      <button type="button" class="link" data-applycolor="${cb.id}" title="把櫃體色號套用到全部板材">套用色號</button>
+      <label>櫃身色號 <input class="num" name="color_code" list="colors" value="${esc(cb.color_code || '')}"></label>
+      <label>門片色號 <input class="num" name="door_color_code" list="colors" value="${esc(cb.door_color_code || '')}" placeholder="同櫃身"></label>
+      <button type="button" class="link" data-applycolor="${cb.id}" title="櫃身色號套到一般板材；門片色號（有填時）套到門片 / 面板（類別「外部」或名稱含「門」）">套用色號</button>
       <label>圖面頁 <select name="drawing">${drawOpts}</select></label>
       <label>圖上編號 <input class="sm" name="drawing_label" value="${esc(cb.drawing_label || '')}" placeholder="①"></label>
       ${cb.drawing_attachment_id ? `<button type="button" class="link" data-view="${cb.drawing_attachment_id}:${cb.drawing_page || 1}">看圖</button>` : ''}
@@ -571,7 +585,7 @@ function cabinetCard(cb, cats, p) {
       <button type="button" class="link" data-dup="${cb.id}" title="複製此櫃體與全部板材">複製櫃體</button>
       <button type="button" class="link danger" data-delcab="${cb.id}">刪除</button>
     </form>
-    ${collapsed ? '' : `<div class="tablewrap"><table class="parts">
+    ${collapsed ? '' : `<div class="tablewrap"><table class="parts ${showCat() ? '' : 'hidecat'}">
       <tr><th>編號</th><th>板材名稱</th><th>類別</th><th>長(同紋)</th><th>封邊</th><th>寬</th><th>封邊</th><th>厚</th><th>數量</th><th>色號</th><th>色號名稱 / 板商 / 封邊色號</th>
           <th>備註1</th><th>備註2</th><th>備註3</th><th>備註4</th><th>提醒</th><th class="r">才數</th><th class="r">金額</th><th>狀態</th><th></th></tr>
       ${cb.parts.map((x) => `<tr data-part="${x.id}" class="${(x.category || '').endsWith('五金') ? 'hw' : ''} ${x.name ? '' : 'draft'}">
@@ -587,7 +601,7 @@ function cabinetCard(cb, cats, p) {
         <td><input class="num" name="color_code" value="${esc(x.color_code || '')}" list="colors"></td>
         <td class="auto small">${esc(x.color_name || '')}${x.board_vendor ? ' / ' + esc(x.board_vendor) : ''}${x.edge_code ? ' / ' + esc(x.edge_code) : ''}</td>
         ${txt(x, 'mark_p', 90)}${txt(x, 'mark_q', 80)}${txt(x, 'mark_r', 60)}
-        <td><input name="remark" value="${esc(x.remark || '')}" style="width:90px;min-width:90px"></td>
+        <td><input name="remark" value="${esc(x.remark || '')}" list="remark4" style="width:90px;min-width:90px" title="可從清單選（基礎資料 → 下拉清單 → 備註4）或直接打字"></td>
         ${txt(x, 'reminder', 100)}
         <td class="auto r">${num(x.area_cai)}</td><td class="auto r">${num(x.amount)}</td>
         <td><select name="status_code">${statusOpts(x.status_code)}</select></td>
@@ -790,10 +804,11 @@ async function renderPartsList(body, p) {
 
 async function renderLabels(body, p) {
   const rows = await api(`/projects/${p.id}/labels`);
-  body.innerHTML = `<div class="card"><h3>標籤列印版 <button id="csv">下載 CSV</button> <span class="muted small">(不含五金列)</span></h3>
+  body.innerHTML = `<div class="card"><h3>標籤列印版 <button id="xlsx" class="primary" title="Excel 檔，可直接用 Excel 開啟或給標籤機">下載 Excel</button> <button id="csv">下載 CSV</button> <span class="muted small">(不含五金列)</span></h3>
     <div class="tablewrap"><table><tr><th>#</th><th>訂單</th><th>案場</th><th>櫃號</th><th>櫃名</th><th>編號</th><th>板材名稱</th><th class="r">長</th><th>封邊</th><th class="r">寬</th><th>封邊</th><th class="r">厚</th><th class="r">數量</th><th>板材廠商</th><th>色號</th><th>封邊色號</th><th>備註</th><th>狀態</th><th>批次</th><th>日期</th></tr>
     ${rows.map((r) => `<tr><td>${r.row}</td><td>${esc(r.order_no)}</td><td>${esc(r.site_name)}</td><td>${r.cabinet_no}</td><td>${esc(r.cabinet_name)}</td><td>${r.part_no}</td><td>${esc(r.name)}</td><td class="r">${num(r.length)}</td><td>${esc(r.edge_l)}</td><td class="r">${num(r.width)}</td><td>${esc(r.edge_w)}</td><td class="r">${num(r.thickness)}</td><td class="r">${r.qty}</td><td>${esc(r.vendor || '')}</td><td>${esc(r.color_code || '')}</td><td>${esc(r.edge_code || '')}</td><td>${esc(r.marks.filter(Boolean).join(' / '))}</td><td>${r.status}</td><td>${r.batch}</td><td>${r.delivery_date || ''}</td></tr>`).join('')}
     </table></div></div>`;
+  body.querySelector('#xlsx').onclick = () => { location.href = `/api/projects/${p.id}/labels.xlsx`; };
   body.querySelector('#csv').onclick = () => {
     const head = ['訂單', '案場', '櫃號', '櫃名', '專案編號', '板材名稱', '長', '封邊', '寬', '封邊', '厚', '生產數量', '板材廠商', '板材色號', '封邊色號', '備註1', '備註2', '備註3', '備註4', '狀態', '批次', '長封邊首碼', '長封邊A', '寬封邊首碼', '寬封邊尾碼', '日期', '結合器'];
     const lines = rows.map((r) => [r.order_no, r.site_name, r.cabinet_no, r.cabinet_name, r.part_no, r.name, r.length, r.edge_l, r.width, r.edge_w, r.thickness, r.qty, r.vendor, r.color_code, r.edge_code, ...r.marks, r.status, r.batch, r.edge_l_first, r.edge_l_flag, r.edge_w_first, r.edge_w_last, r.delivery_date, r.joint_type].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','));
@@ -890,11 +905,12 @@ async function pageCustomers() {
 
 // ───────── 基礎資料 ─────────
 async function pageMaster(tab = 'colors') {
-  const tabs = [['colors', '色號 / 單價'], ['catalog', '零件目錄'], ['process', '加工/封邊'], ['marks', '標記'], ['hardware', '五金配件'], ['vendors', '廠商'], ['lookups', '下拉清單'], ['cabprices', '牌價表'], ['cost', '成本分析'], ['company', '公司資料']];
+  const tabs = [['colors', '色號 / 單價'], ['catalog', '零件目錄'], ['templates', '櫃體範本'], ['process', '加工/封邊'], ['marks', '標記'], ['hardware', '五金配件'], ['vendors', '廠商'], ['lookups', '下拉清單'], ['cabprices', '牌價表'], ['cost', '成本分析'], ['company', '公司資料']];
   $app.innerHTML = `<div class="tabs">${tabs.map(([k, v]) => `<button class="${tab == k ? 'active' : ''}" onclick="location.hash='#/master/${k}'">${v}</button>`).join('')}</div><div id="mbody" class="card">載入中…</div>`;
   const b = document.getElementById('mbody');
   if (tab === 'colors') await masterColors(b);
   else if (tab === 'catalog') await masterCatalog(b);
+  else if (tab === 'templates') await masterTemplates(b);
   else if (tab === 'process') await masterProcess(b);
   else if (tab === 'marks') await masterSimple(b, { path: '/master/marks', idKey: 'id', title: '標記（備註欄常用代碼）', cols: [['name', '標記', 'text', 120], ['code', '代碼', 'text', 70], ['number', '編號', 'number', 70]], required: 'name' });
   else if (tab === 'hardware') await masterHardware(b);
@@ -1216,4 +1232,47 @@ async function masterCatalog(b) {
     tr.querySelectorAll('[data-move]').forEach((m) => (m.onclick = async () => { await api(`/master/parts-catalog/${id}/move`, { method: 'POST', body: { direction: m.dataset.move } }); reload(); }));
     tr.querySelector('[data-delcat]').onclick = async () => { if (!confirm('從目錄移除此名稱？（已在料單裡的板材不受影響）')) return; await api('/master/parts-catalog/' + id, { method: 'DELETE' }); reload(); };
   });
+}
+
+// 櫃體範本 (回饋 #3)：新增櫃體時依類型產生標準板件。公式變數 H 櫃高 / D 櫃深 / W 櫃寬 / t 板厚
+const TPL_GRP = { base: '基本料', inner: '內部隔板（可勾選）', door: '門片（可勾選）' };
+async function masterTemplates(b, sel) {
+  await ensureMaster();
+  const tpls = await api('/master/cabinet-templates');
+  state.templates = tpls;
+  const cur = tpls.find((t) => t.id === sel) || tpls[0];
+  const cats = ['桶身', '內部', '外部', '抽屜', '內部五金', '外部五金', '其它五金'];
+  const grpOpt = (v) => Object.entries(TPL_GRP).map(([k, t]) => `<option value="${k}" ${k === v ? 'selected' : ''}>${t.split('（')[0]}</option>`).join('');
+  b.innerHTML = `<div class="row" style="justify-content:space-between;align-items:baseline"><h3 style="margin:0">櫃體範本</h3>
+      <span class="row"><input id="tplname" placeholder="新範本名稱，例：爐台櫃" style="width:160px"><button id="tpladd" class="primary small">新增範本</button></span></div>
+    <p class="muted small">新增櫃體時先選類型，系統依範本產生板件；「內部隔板」與「門片」兩組在新增時可勾選要不要。尺寸公式可用 <b>H</b> 櫃高、<b>D</b> 櫃深、<b>W</b> 櫃寬、<b>t</b> 板厚，例如 <code>W-2*t</code>、<code>H-22</code>、<code>W/2-4</code>、<code>120</code>；留空＝之後自己填。</p>
+    <div class="tabs">${tpls.map((t) => `<button class="${t.id === cur?.id ? 'active' : ''}" data-tpl="${t.id}">${esc(t.name)}</button>`).join('')}</div>
+    ${cur ? `<div class="row" style="gap:10px;margin-bottom:8px"><label>範本名稱 <input id="tplrename" value="${esc(cur.name)}" style="width:160px"></label><label>說明 <input id="tplnote" value="${esc(cur.note || '')}" style="width:360px"></label>
+      <button class="link" id="tpldup">複製此範本</button><button class="link danger" id="tpldel">刪除範本</button></div>
+    <div class="tablewrap"><table class="edit"><tr><th style="width:40px">#</th><th>組別</th><th>類別</th><th>板材名稱</th><th>長(同紋) 公式</th><th>寬 公式</th><th>厚 公式</th><th>數量</th><th></th></tr>
+      <tr class="newrow"><td>＋</td><td><select name="grp">${grpOpt('base')}</select></td><td><select name="category">${opt(cats, '桶身', false)}</select></td><td><input name="name" placeholder="例：上前立板" list="partnames"></td>
+        <td><input name="length_expr" placeholder="W-2*t" style="width:90px"></td><td><input name="width_expr" placeholder="D" style="width:90px"></td><td><input name="thickness_expr" value="t" style="width:60px"></td><td><input name="qty" type="number" value="1" class="sm"></td><td><button class="primary small" id="tplpartadd">加入</button></td></tr>
+      ${cur.parts.map((x, i) => `<tr data-id="${x.id}"><td class="muted">${i + 1}</td><td><select name="grp">${grpOpt(x.grp)}</select></td><td><select name="category">${opt(cats, x.category)}</select></td><td><input name="name" value="${esc(x.name)}" list="partnames"></td>
+        <td><input name="length_expr" value="${esc(x.length_expr || '')}" style="width:90px"></td><td><input name="width_expr" value="${esc(x.width_expr || '')}" style="width:90px"></td><td><input name="thickness_expr" value="${esc(x.thickness_expr || 't')}" style="width:60px"></td><td><input name="qty" type="number" value="${x.qty}" class="sm"></td>
+        <td class="nowrap"><button class="link" data-up="${x.id}" title="上移">↑</button><button class="link danger" data-del="${x.id}">✕</button></td></tr>`).join('')}
+    </table></div>
+    <p class="muted small">範例（櫃寬 900、櫃深 560、櫃高 700、板厚 18）：${cur.parts.slice(0, 4).map((x) => `${esc(x.name)} ${esc(x.length_expr || '-')}×${esc(x.width_expr || '-')}`).join('、')}</p>` : '<p class="muted">尚無範本，請先新增。</p>'}${nameDatalist()}`;
+  const reload = (id) => { state.templates = null; masterTemplates(b, id ?? cur?.id); };
+  b.querySelectorAll('[data-tpl]').forEach((x) => (x.onclick = () => masterTemplates(b, +x.dataset.tpl)));
+  b.querySelector('#tpladd').onclick = async () => { const name = b.querySelector('#tplname').value.trim(); if (!name) return toast('請填範本名稱', true); try { const r = await api('/master/cabinet-templates', { method: 'POST', body: { name } }); toast('已新增'); reload(r[r.length - 1]?.id); } catch (e) { toast(e.message, true); } };
+  if (!cur) return;
+  const saveTpl = async () => { try { await api('/master/cabinet-templates/' + cur.id, { method: 'PUT', body: { name: b.querySelector('#tplrename').value.trim() || cur.name, note: b.querySelector('#tplnote').value || null } }); toast('已儲存'); reload(); } catch (e) { toast(e.message, true); } };
+  b.querySelector('#tplrename').onchange = saveTpl; b.querySelector('#tplnote').onchange = saveTpl;
+  b.querySelector('#tpldup').onclick = async () => { const r = await api(`/master/cabinet-templates/${cur.id}/duplicate`, { method: 'POST' }); toast('已複製'); reload(r[r.length - 1]?.id); };
+  b.querySelector('#tpldel').onclick = async () => { if (!confirm(`刪除範本「${cur.name}」？已建立的櫃體不受影響。`)) return; await api('/master/cabinet-templates/' + cur.id, { method: 'DELETE' }); toast('已刪除'); reload(null); };
+  b.querySelector('#tplpartadd').onclick = async () => { const d = rowData(b.querySelector('tr.newrow')); if (!d.name) return toast('請填板材名稱', true); try { await api(`/master/cabinet-templates/${cur.id}/parts`, { method: 'POST', body: d }); toast('已加入'); reload(); } catch (e) { toast(e.message, true); } };
+  b.querySelectorAll('tr[data-id]').forEach((tr) => tr.querySelectorAll('input,select').forEach((i) => { i.onchange = async () => { try { await api('/master/cabinet-template-parts/' + tr.dataset.id, { method: 'PUT', body: rowData(tr) }); toast('已儲存'); state.templates = null; } catch (e) { toast(e.message, true); reload(); } }; i.onkeydown = (e) => { if (e.key === 'Enter') i.blur(); }; }));
+  b.querySelectorAll('[data-del]').forEach((x) => (x.onclick = async () => { await api('/master/cabinet-template-parts/' + x.dataset.del, { method: 'DELETE' }); reload(); }));
+  b.querySelectorAll('[data-up]').forEach((x) => (x.onclick = async () => {
+    const i = cur.parts.findIndex((pp) => pp.id === +x.dataset.up); if (i <= 0) return;
+    const a = cur.parts[i], prev = cur.parts[i - 1];
+    await api('/master/cabinet-template-parts/' + a.id, { method: 'PUT', body: { ...a, sort: prev.sort } });
+    await api('/master/cabinet-template-parts/' + prev.id, { method: 'PUT', body: { ...prev, sort: a.sort === prev.sort ? prev.sort + 1 : a.sort } });
+    reload();
+  }));
 }

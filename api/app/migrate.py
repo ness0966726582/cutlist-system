@@ -135,6 +135,27 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 -- 1.1.0：回饋可附截圖/檔案；完成時記錄修正版本 (更新通知看板用)
 ALTER TABLE feedback ADD COLUMN IF NOT EXISTS resolved_version text;
+-- 1.1.0 回饋 #2：櫃身 / 門片分色
+ALTER TABLE cabinets ADD COLUMN IF NOT EXISTS door_color_code text;
+-- 1.1.0 回饋 #3：櫃體範本 (新增櫃體時依類型產生標準板件；尺寸公式用 H 櫃高 / D 櫃深 / W 櫃寬 / t 板厚)
+CREATE TABLE IF NOT EXISTS cabinet_templates (
+    id    serial PRIMARY KEY,
+    name  text NOT NULL UNIQUE,
+    sort  int NOT NULL DEFAULT 0,
+    note  text
+);
+CREATE TABLE IF NOT EXISTS cabinet_template_parts (
+    id             serial PRIMARY KEY,
+    template_id    int NOT NULL REFERENCES cabinet_templates(id) ON DELETE CASCADE,
+    sort           int NOT NULL DEFAULT 0,
+    grp            text NOT NULL DEFAULT 'base',   -- base 基本 / inner 內部隔板 (可勾選) / door 門片 (可勾選)
+    category       text,
+    name           text NOT NULL,
+    length_expr    text,
+    width_expr     text,
+    thickness_expr text DEFAULT 't',
+    qty            int NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS feedback_files (
     id           serial PRIMARY KEY,
     feedback_id  int NOT NULL REFERENCES feedback(id) ON DELETE CASCADE,
@@ -147,7 +168,40 @@ CREATE TABLE IF NOT EXISTS feedback_files (
 """
 
 
+# 預設櫃體範本 (回饋 #3)：基本料 + 依業主可勾選的內部隔板 + 門片；水槽櫃 / 油機吊櫃 結構不同
+_BASE = [("base", "桶身", "頂板", "W-2*t", "D"), ("base", "桶身", "底板", "W-2*t", "D"), ("base", "桶身", "左側板", "H", "D"), ("base", "桶身", "右側板", "H", "D"),
+         ("base", "桶身", "背板", "H-22", "W-22", "4"), ("base", "桶身", "背拉桿", "W-2*t", "120")]
+_INNER = [("inner", "內部", "中立板", "W-2*t", "D-22"), ("inner", "內部", "活隔", "", "D-32"), ("inner", "內部", "固隔", "", "D-22")]
+_DOOR = [("door", "外部", "左門板", "", "W/2-4"), ("door", "外部", "右門板", "", "W/2-4")]
+DEFAULT_TEMPLATES = [
+    ("標準櫃", "頂板、底板、左右側板、背板、背拉桿；勾選內部隔板 (中立板/活隔/固隔) 與門片", _BASE + _INNER + _DOOR),
+    ("水槽櫃", "無頂板、無背板，多一片上前立板", [r for r in _BASE if r[2] not in ("頂板", "背板")] + [("base", "桶身", "上前立板", "W-2*t", "100")] + _INNER + _DOOR),
+    ("油機吊櫃", "抽油煙機櫃：無底板，上前立板 + 下前立板", [r for r in _BASE if r[2] != "底板"] + [("base", "桶身", "上前立板", "W-2*t", "100"), ("base", "桶身", "下前立板", "W-2*t", "100")] + _INNER + _DOOR),
+]
+
+
+def _seed_templates(c):
+    if c.execute("SELECT 1 FROM cabinet_templates LIMIT 1").fetchone():
+        return
+    for i, (name, note, rows) in enumerate(DEFAULT_TEMPLATES, start=1):
+        tid = c.execute("INSERT INTO cabinet_templates(name, sort, note) VALUES (%s,%s,%s) RETURNING id", (name, i, note)).fetchone()["id"]
+        for j, r in enumerate(rows, start=1):
+            grp, cat, pname, L, W = r[:5]
+            T = r[5] if len(r) > 5 else "t"
+            c.execute("INSERT INTO cabinet_template_parts(template_id, sort, grp, category, name, length_expr, width_expr, thickness_expr) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                      (tid, j, grp, cat, pname, L or None, W or None, T))
+
+
+def _seed_lookups(c):
+    # 回饋 #5：備註 4 做下拉 (基礎資料 → 下拉清單 → 備註4 可自行增減)
+    if not c.execute("SELECT 1 FROM lookup_values WHERE kind='備註4' LIMIT 1").fetchone():
+        for i, v in enumerate(["把手", "特殊", "拉門", "玻璃"], start=1):
+            c.execute("INSERT INTO lookup_values(kind, value, sort) VALUES ('備註4', %s, %s) ON CONFLICT DO NOTHING", (v, i))
+
+
 def run():
     with conn() as c:
         c.execute(MIGRATIONS)
+        _seed_templates(c)
+        _seed_lookups(c)
         c.commit()

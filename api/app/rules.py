@@ -187,3 +187,63 @@ def default_parts(height, depth, width, thickness):
         ("外部", "右門板", None,          (w / 2 - 4) if w is not None else None, t),
     ]
     return rows
+
+
+# ───────────── 櫃體範本尺寸公式 (回饋 #3) ─────────────
+_ALLOWED_NAMES = {"H", "D", "W", "t"}
+
+
+def eval_dim(expr, H, D, W, t) -> Optional[Decimal]:
+    """算範本的尺寸公式，例如 'W-2*t'、'H-22'、'W/2-4'、'120'。變數：H 櫃高、D 櫃深、W 櫃寬、t 板厚。
+    空字串 → None (使用者自己填)；用到的變數沒值 → None。只允許 + - * / 括號與數字，其他一律拒絕。"""
+    import ast
+    if expr is None or not str(expr).strip():
+        return None
+    env = {"H": H, "D": D, "W": W, "t": t}
+
+    def ev(n):
+        if isinstance(n, ast.Expression):
+            return ev(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return Decimal(str(n.value))
+        if isinstance(n, ast.Name):
+            if n.id not in _ALLOWED_NAMES:
+                raise ValueError(f"不認得的變數 {n.id}（只能用 H D W t）")
+            v = env[n.id]
+            if v is None:
+                raise _Missing()
+            return Decimal(str(v))
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.USub, ast.UAdd)):
+            v = ev(n.operand)
+            return -v if isinstance(n.op, ast.USub) else v
+        if isinstance(n, ast.BinOp) and isinstance(n.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+            a, b = ev(n.left), ev(n.right)
+            if isinstance(n.op, ast.Add):
+                return a + b
+            if isinstance(n.op, ast.Sub):
+                return a - b
+            if isinstance(n.op, ast.Mult):
+                return a * b
+            if b == 0:
+                raise ValueError("除以 0")
+            return a / b
+        raise ValueError("公式只能有數字、H D W t、+ - * / 與括號")
+
+    try:
+        tree = ast.parse(str(expr).strip(), mode="eval")
+        return ev(tree).quantize(Decimal("0.1"))
+    except _Missing:
+        return None
+
+
+class _Missing(Exception):
+    pass
+
+
+def check_dim_expr(expr) -> Optional[str]:
+    """檢查公式可不可用；回傳錯誤訊息或 None。"""
+    try:
+        eval_dim(expr, 1, 1, 1, 1)
+        return None
+    except (ValueError, SyntaxError) as e:
+        return str(e)
