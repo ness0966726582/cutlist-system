@@ -12,12 +12,15 @@ for t in images-*.tar images-*.tar.gz; do
   case "$t" in *.gz) gunzip -c "$t" | docker load ;; *) docker load -i "$t" ;; esac
 done
 
-# 2. .env
+# 2. .env（版本號取自映像檔名 images-<版本>.tar；之後升級只要放新的 tar 再跑一次，這裡會自動改 CUTLIST_VERSION，資料不動）
+VER=$(ls images-*.tar* 2>/dev/null | sort -V | tail -1 | sed 's/images-\(.*\)\.tar.*/\1/')
 if [ ! -f .env ]; then
   PW=$(head -c 48 /dev/urandom | tr -dc 'a-z0-9' | head -c 20)
-  VER=$(ls images-*.tar* 2>/dev/null | head -1 | sed 's/images-\(.*\)\.tar.*/\1/')
   printf 'POSTGRES_PASSWORD=%s\nWEB_PORT=8100\nCUTLIST_VERSION=%s\n' "$PW" "${VER:-latest}" > .env
   echo "已建立 .env（資料庫密碼隨機，請勿刪除）"
+elif [ -n "$VER" ] && ! grep -q "^CUTLIST_VERSION=$VER\$" .env; then
+  echo "升級到 $VER（先備份目前資料）"; sh ./backup.sh || true
+  grep -q '^CUTLIST_VERSION=' .env && sed -i "s/^CUTLIST_VERSION=.*/CUTLIST_VERSION=$VER/" .env || echo "CUTLIST_VERSION=$VER" >> .env
 fi
 mkdir -p data/db data/files
 # Synology 的 @eaDir 會讓 PostgreSQL 第一次初始化失敗；資料庫實際放在 data/db/pgdata (compose 的 PGDATA)

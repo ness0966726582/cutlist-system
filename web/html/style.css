@@ -122,3 +122,17 @@ button.small { padding: 2px 6px; font-size: 12px; }
 @media print { .topbar, .tabs, #hdr, .nav, button { display: none !important; } main { padding: 0; } .card { border: none; } }
 @media (max-width: 900px) { .split, .grid2 { grid-template-columns: 1fr; } .nav { position: static; max-height: none; } }
 @media (max-width: 700px) { main { padding: 10px; } .topbar { gap: 10px; } }
+
+/* 1.1.0 回饋附件 / 更新通知 */
+.navdot[hidden] { display: none; }
+.navdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-left: 4px; vertical-align: super; }
+.fb-drop { border: 1px dashed #94a3b8; border-radius: 8px; padding: 8px; background: #f8fafc; }
+.fb-drop.over { border-color: #1f6feb; background: #eff6ff; }
+.fb-files { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.fb-file, .fb-att { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.fb-file img, .fb-att img { height: 48px; max-width: 96px; object-fit: cover; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; }
+.fb-att { text-decoration: none; color: inherit; }
+.fb-att:hover img { outline: 2px solid #1f6feb; }
+.fb-list li { margin: 6px 0; line-height: 1.5; }
+.tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #e2e8f0; color: #334155; margin-right: 2px; }
+.tag.ok { background: #dcfce7; color: #166534; }

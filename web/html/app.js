@@ -104,7 +104,7 @@ function newCustomerModal() {
 }
 
 // ───────── router ─────────
-const routes = { '': pageProjects, projects: pageProjects, project: pageProject, customers: pageCustomers, master: pageMaster, feedback: pageFeedback, changelog: pageChangelog };
+const routes = { '': pageProjects, projects: pageProjects, project: pageProject, customers: pageCustomers, master: pageMaster, feedback: pageFeedback, updates: pageUpdates, changelog: pageUpdates };
 async function route() {
   const [name, ...args] = location.hash.replace(/^#\/?/, '').split('/');
   const fn = routes[name] || pageProjects;
@@ -119,11 +119,12 @@ function tourName() {
   if (h.startsWith('#/customers')) return 'customers';
   if (h.startsWith('#/master')) return 'master';
   if (h.startsWith('#/feedback')) return 'feedback';
+  if (h.startsWith('#/updates') || h.startsWith('#/changelog')) return 'updates';
   return 'projects';
 }
 
 // ───────── 版本號 / 意見回饋 ─────────
-api('/version').then((v) => { document.getElementById('verbadge').textContent = 'v' + v.version; }).catch(() => {});
+api('/version').then((v) => { document.getElementById('verbadge').textContent = 'v' + v.version; checkNewVersion(v.version); }).catch(() => {});
 const FB_CAT = { bug: '問題（哪裡怪怪的／算錯／按了沒反應）', feature: '需求（希望多一個功能或改流程）', question: '疑問（不知道怎麼操作）', other: '其他' };
 const FB_STATUS = { new: '新', planned: '已排程', done: '已完成', rejected: '不處理' };
 document.getElementById('fbbtn').onclick = () => openFeedbackModal();
@@ -133,24 +134,57 @@ function openFeedbackModal() {
   let reporter = ''; try { reporter = localStorage.getItem('fb-reporter') || ''; } catch (e) { /* ignore */ }
   const ctx = P && location.hash.startsWith('#/project/') ? `專案 ${P.order_no} ${P.site_name}` : '';
   v.style.display = 'flex';
+  const pending = [];   // 要一起送出的截圖 / 檔案
   v.innerHTML = `<div class="modal-box" style="width:min(96vw,640px)"><div class="row" style="justify-content:space-between"><b>意見回饋</b><button type="button" id="fbclose">關閉</button></div>
     <p class="muted small" style="margin:0">寫下你遇到的狀況或想要的功能，會連同目前頁面一起記錄；管理者會在「回饋」頁看到並處理。</p>
     <form id="fbform" style="display:grid;gap:8px">
       <label class="muted small">類型<br><select name="category" style="width:100%">${Object.entries(FB_CAT).map(([k, t]) => `<option value="${k}">${t}</option>`).join('')}</select></label>
       <label class="muted small">內容（越具體越好：在哪一頁、做了什麼、看到什麼、預期是什麼）<br><textarea name="message" rows="5" required style="width:100%"></textarea></label>
+      <div class="fb-drop" id="fbdrop"><div class="muted small">附上畫面或檔案（可多個）：<b>Win + Shift + S</b> 截圖後在這裡按 <b>Ctrl + V</b> 貼上，或把檔案拖進來，或
+        <label class="link" style="cursor:pointer">選檔案<input type="file" id="fbfile" multiple accept="image/*,.pdf,.xlsx,.xls,.csv,.txt,.md,.docx,.zip" hidden></label></div>
+        <div id="fbfiles" class="fb-files"></div></div>
       <div class="row"><label class="muted small">你的名字<br><input name="reporter" value="${esc(reporter)}" placeholder="方便確認細節時找你"></label>
         <span class="muted small">頁面：${esc(location.hash || '#/projects')}${ctx ? '｜' + esc(ctx) : ''}</span></div>
       <div><button class="primary">送出</button></div></form></div>`;
   v.querySelector('#fbclose').onclick = () => (v.style.display = 'none');
   v.onclick = (e) => { if (e.target === v) v.style.display = 'none'; };
+  const addFiles = (list) => {
+    for (const f of list) {
+      if (!f || !f.size) continue;
+      if (f.size > 25 * 1024 * 1024) { toast(`${f.name} 超過 25 MB`, true); continue; }
+      const name = f.name || `截圖_${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.png`;
+      pending.push(f.name ? f : new File([f], name, { type: f.type }));
+    }
+    renderFiles();
+  };
+  const renderFiles = () => {
+    const box = v.querySelector('#fbfiles');
+    box.innerHTML = pending.map((f, i) => `<span class="fb-file">${f.type.startsWith('image/') ? `<img src="${URL.createObjectURL(f)}" alt="">` : '📄'} ${esc(f.name)} <small class="muted">${Math.max(1, Math.round(f.size / 1024))} KB</small> <button type="button" class="link danger" data-rm="${i}">✕</button></span>`).join('');
+    box.querySelectorAll('[data-rm]').forEach((b) => (b.onclick = () => { pending.splice(+b.dataset.rm, 1); renderFiles(); }));
+  };
+  v.querySelector('#fbfile').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
+  v.addEventListener('paste', (e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); } });
+  const drop = v.querySelector('#fbdrop');
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files); };
   v.querySelector('#fbform').onsubmit = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
+    delete f.fbfile;
     try { localStorage.setItem('fb-reporter', f.reporter || ''); } catch (err) { /* ignore */ }
-    try { await api('/feedback', { method: 'POST', body: { ...f, page: location.hash || '#/projects', context: ctx || null } }); v.style.display = 'none'; toast('已送出，謝謝回饋'); }
-    catch (err) { toast(err.message, true); }
+    const btn = e.target.querySelector('button.primary'); btn.disabled = true; btn.textContent = '送出中…';
+    try {
+      const row = await api('/feedback', { method: 'POST', body: { ...f, page: location.hash || '#/projects', context: ctx || null } });
+      if (pending.length) { const fd = new FormData(); pending.forEach((pf) => fd.append('files', pf, pf.name)); await api(`/feedback/${row.id}/files`, { method: 'POST', body: fd }); }
+      v.style.display = 'none'; toast(`已送出（#${row.id}${pending.length ? `，附 ${pending.length} 個檔案` : ''}），謝謝回饋`);
+    } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = '送出'; }
   };
   setTimeout(() => v.querySelector('[name=message]').focus(), 50);
+}
+// 回饋附件：縮圖 / 連結 + 刪除
+function fbFilesHtml(f, canDelete = true) {
+  return (f.files || []).map((a) => `<a class="fb-att" href="/api/feedback-files/${a.id}" target="_blank" title="${esc(a.filename)}">${(a.content_type || '').startsWith('image/') ? `<img src="/api/feedback-files/${a.id}" alt="">` : '📄 ' + esc(a.filename)}</a>${canDelete ? `<button class="link danger small" data-delfile="${a.id}" title="刪除附件">✕</button>` : ''}`).join(' ');
 }
 
 async function pageFeedback(filter = '') {
@@ -160,21 +194,26 @@ async function pageFeedback(filter = '') {
   $app.innerHTML = `<div class="card">
     <div class="row" style="justify-content:space-between"><h2 style="margin:0">操作者回饋</h2>
       <span><a href="/api/feedback-export.md?status=new,planned" download><button title="把「新」與「已排程」的回饋匯成 Markdown，貼給開發者處理">匯出待處理清單</button></a></span></div>
-    <p class="muted small">流程：操作者用右下角「意見回饋」送出 → 管理者在這裡看、標狀態、寫備註 → 要請開發者改的，按「匯出待處理清單」把檔案內容貼給開發者 → 改好後把狀態改「已完成」，並寫進「更新紀錄」。</p>
+    <p class="muted small">流程：操作者用右下角「意見回饋」送出 → 管理者在這裡看、標狀態、寫備註 → 要請開發者改的，按「匯出待處理清單」把檔案內容貼給開發者 → 改好後把狀態改「已完成」，操作者就會在「更新通知」看到這一筆被修正了（修正版本會自動帶目前版本）。</p>
     <div class="tabs">${[['', '全部'], ['new', `新 ${cnt('new')}`], ['planned', `已排程 ${cnt('planned')}`], ['done', `已完成 ${cnt('done')}`], ['rejected', `不處理 ${cnt('rejected')}`]].map(([k, t]) => `<button class="${(status || '') === k ? 'active' : ''}" data-fs="${k}">${t}</button>`).join('')}
       <select id="fbcat"><option value="">全部類型</option>${Object.entries(FB_CAT).map(([k, t]) => `<option value="${k}" ${category === k ? 'selected' : ''}>${t.split('（')[0]}</option>`).join('')}</select></div>
-    <div class="tablewrap"><table><tr><th>#</th><th>時間</th><th>類型</th><th>內容</th><th>頁面 / 脈絡</th><th>回報人</th><th>版本</th><th>狀態</th><th>處理備註</th><th></th></tr>
+    <div class="tablewrap"><table><tr><th>#</th><th>時間</th><th>類型</th><th>內容</th><th>附件</th><th>頁面 / 脈絡</th><th>回報人</th><th>版本</th><th>狀態</th><th>修正版本</th><th>處理備註</th><th></th></tr>
     ${d.items.map((f) => `<tr data-id="${f.id}"><td>${f.id}</td><td class="small">${fmtDate(f.created_at)}<br><span class="muted">${String(f.created_at).slice(11, 16)}</span></td>
       <td><select name="category">${Object.entries(FB_CAT).map(([k, t]) => `<option value="${k}" ${f.category === k ? 'selected' : ''}>${t.split('（')[0]}</option>`).join('')}</select></td>
-      <td style="white-space:pre-wrap;max-width:420px">${esc(f.message)}</td><td class="small muted">${esc(f.page || '')}${f.context ? '<br>' + esc(f.context) : ''}</td><td>${esc(f.reporter || '')}</td><td class="small muted">${esc(f.version || '')}</td>
+      <td style="white-space:pre-wrap;min-width:260px;max-width:420px">${esc(f.message)}</td>
+      <td class="fb-files" style="min-width:120px">${fbFilesHtml(f)}<label class="link small" style="cursor:pointer" title="補附件">＋<input type="file" multiple hidden data-addfile="${f.id}" accept="image/*,.pdf,.xlsx,.xls,.csv,.txt,.md,.docx,.zip"></label></td>
+      <td class="small muted">${esc(f.page || '')}${f.context ? '<br>' + esc(f.context) : ''}</td><td>${esc(f.reporter || '')}</td><td class="small muted">${esc(f.version || '')}</td>
       <td><select name="status">${Object.entries(FB_STATUS).map(([k, t]) => `<option value="${k}" ${f.status === k ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
-      <td><input name="admin_note" value="${esc(f.admin_note || '')}" placeholder="例：1.0.1 已改" style="min-width:160px"></td>
-      <td><button class="link danger" data-del="${f.id}">✕</button></td></tr>`).join('') || '<tr><td colspan="10" class="muted">目前沒有回饋</td></tr>'}
+      <td><input name="resolved_version" value="${esc(f.resolved_version || '')}" placeholder="改「已完成」自動帶" style="width:110px" title="哪一版修好的；會顯示在「更新通知」"></td>
+      <td><input name="admin_note" value="${esc(f.admin_note || '')}" placeholder="例：改了計價頁的折數" style="min-width:160px"></td>
+      <td><button class="link danger" data-del="${f.id}">✕</button></td></tr>`).join('') || '<tr><td colspan="12" class="muted">目前沒有回饋</td></tr>'}
     </table></div></div>`;
   $app.querySelectorAll('[data-fs]').forEach((b) => (b.onclick = () => pageFeedback(`${b.dataset.fs},${$app.querySelector('#fbcat').value}`)));
   $app.querySelector('#fbcat').onchange = (e) => pageFeedback(`${status || ''},${e.target.value}`);
-  $app.querySelectorAll('tr[data-id]').forEach((tr) => tr.querySelectorAll('select,input').forEach((i) => { i.onchange = async () => { await api('/feedback/' + tr.dataset.id, { method: 'PUT', body: rowData(tr) }); toast('已更新'); if (i.name === 'status') pageFeedback(filter); }; i.onkeydown = (e) => { if (e.key === 'Enter') i.blur(); }; }));
-  $app.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => { if (!confirm('刪除這筆回饋？')) return; await api('/feedback/' + b.dataset.del, { method: 'DELETE' }); pageFeedback(filter); }));
+  $app.querySelectorAll('tr[data-id]').forEach((tr) => tr.querySelectorAll('select,input:not([type=file])').forEach((i) => { i.onchange = async () => { await api('/feedback/' + tr.dataset.id, { method: 'PUT', body: rowData(tr) }); toast('已更新'); if (i.name === 'status') pageFeedback(filter); }; i.onkeydown = (e) => { if (e.key === 'Enter') i.blur(); }; }));
+  $app.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => { if (!confirm('刪除這筆回饋（含附件）？')) return; await api('/feedback/' + b.dataset.del, { method: 'DELETE' }); pageFeedback(filter); }));
+  $app.querySelectorAll('[data-delfile]').forEach((b) => (b.onclick = async () => { if (!confirm('刪除這個附件？')) return; await api('/feedback-files/' + b.dataset.delfile, { method: 'DELETE' }); pageFeedback(filter); }));
+  $app.querySelectorAll('[data-addfile]').forEach((i) => (i.onchange = async (e) => { const fd = new FormData(); [...e.target.files].forEach((f) => fd.append('files', f, f.name)); try { await api(`/feedback/${i.dataset.addfile}/files`, { method: 'POST', body: fd }); toast('已加入附件'); pageFeedback(filter); } catch (err) { toast(err.message, true); } }));
   window.maybeAutoTour('feedback');
 }
 
@@ -195,9 +234,28 @@ function mdToHtml(md) {
   return out.join('');
   function inline(s) { return esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>'); }
 }
-async function pageChangelog() {
-  const [c, v] = await Promise.all([api('/changelog'), api('/version')]);
-  $app.innerHTML = `<div class="card md"><div class="row" style="justify-content:space-between"><span class="muted">目前版本 <b>v${esc(v.version)}</b></span></div>${mdToHtml(c.markdown || '（尚無更新紀錄）')}</div>`;
+// 更新通知看板：目前版本、每一版針對哪些回饋做了修正、處理中的回饋、完整更新紀錄
+async function pageUpdates() {
+  const d = await api('/updates');
+  markVersionSeen(d.version);
+  const catShort = (k) => (FB_CAT[k] || k).split('（')[0];
+  const item = (r) => `<li><b>#${r.id}</b> <span class="tag">${catShort(r.category)}</span> ${esc(r.message)}${r.reporter ? ` <span class="muted small">（${esc(r.reporter)} 回報）</span>` : ''}${r.admin_note ? `<br><span class="small">→ ${esc(r.admin_note)}</span>` : ''}</li>`;
+  $app.innerHTML = `<div class="card">
+    <div class="row" style="justify-content:space-between;align-items:baseline"><h2 style="margin:0">更新通知</h2><span class="muted">目前版本 <b>v${esc(d.version)}</b></span></div>
+    <p class="muted small">這裡看三件事：哪些回饋已經修好（會寫在哪一版）、哪些還在處理、每一版改了什麼。新版本上線時，上方「更新通知」會出現紅點。</p>
+    <div class="tabs" id="updtabs"><button class="active" data-t="fixed">針對回饋的修正</button><button data-t="pending">處理中 ${d.pending.length}</button><button data-t="log">完整更新紀錄</button></div>
+    <div id="upd-fixed">${d.resolved.length ? d.resolved.map((g) => `<h3>v${esc(g.version)} <span class="muted small">修正了 ${g.items.length} 項回饋</span></h3><ul class="fb-list">${g.items.map(item).join('')}</ul>`).join('') : '<p class="muted">還沒有標成「已完成」的回饋。管理者在「回饋」頁把狀態改成已完成，就會列在這裡。</p>'}</div>
+    <div id="upd-pending" hidden>${d.pending.length ? `<ul class="fb-list">${d.pending.map((r) => `<li><b>#${r.id}</b> <span class="tag">${catShort(r.category)}</span> <span class="tag ${r.status === 'planned' ? 'ok' : ''}">${FB_STATUS[r.status]}</span> ${esc(r.message)}${r.reporter ? ` <span class="muted small">（${esc(r.reporter)}）</span>` : ''}${r.admin_note ? `<br><span class="small">→ ${esc(r.admin_note)}</span>` : ''}</li>`).join('')}</ul>` : '<p class="muted">目前沒有待處理的回饋。</p>'}</div>
+    <div id="upd-log" class="md" hidden>${mdToHtml(d.changelog || '（尚無更新紀錄）')}</div></div>`;
+  $app.querySelectorAll('#updtabs button').forEach((b) => (b.onclick = () => { $app.querySelectorAll('#updtabs button').forEach((x) => x.classList.toggle('active', x === b)); ['fixed', 'pending', 'log'].forEach((t) => ($app.querySelector('#upd-' + t).hidden = t !== b.dataset.t)); }));
+  window.maybeAutoTour('updates');
+}
+// 新版本提示：版本號和上次看過的不同 → 導覽列紅點 + 提示一次
+function markVersionSeen(ver) { try { localStorage.setItem('seen-version', ver); } catch (e) { /* ignore */ } document.getElementById('upddot').hidden = true; }
+function checkNewVersion(ver) {
+  let seen = null; try { seen = localStorage.getItem('seen-version'); } catch (e) { /* ignore */ }
+  if (!seen) { markVersionSeen(ver); return; }
+  if (seen !== ver) { document.getElementById('upddot').hidden = false; if (!location.hash.startsWith('#/updates')) toast(`系統已更新到 v${ver}，點「更新通知」看改了什麼`); }
 }
 document.getElementById('tourbtn').onclick = () => { if (!window.startTour(tourName())) toast('這一頁沒有導覽'); };
 

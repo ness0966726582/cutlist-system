@@ -4,7 +4,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .db import conn, q1, qa
@@ -422,6 +423,7 @@ def put_settings(body: dict[str, Optional[str]]):
 
 # ───────────────────────── 版本 / 更新紀錄 / 意見回饋 ─────────────────────────
 import os as _os
+import re as _re
 
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 
@@ -456,6 +458,7 @@ class FeedbackUpdate(BaseModel):
     status: Optional[str] = None
     admin_note: Optional[str] = None
     category: Optional[str] = None
+    resolved_version: Optional[str] = None   # 哪一版修好的；狀態改「已完成」時沒填會自動帶目前版本
 
 
 FEEDBACK_STATUS = ("new", "planned", "done", "rejected")
@@ -484,7 +487,19 @@ def list_feedback(status: Optional[str] = None, category: Optional[str] = None):
         sql += " ORDER BY CASE status WHEN 'new' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END, created_at DESC"
         rows = qa(c, sql, params)
         counts = {r["status"]: r["n"] for r in qa(c, "SELECT status, count(*) AS n FROM feedback GROUP BY status")}
+        _attach_files(c, rows)
     return {"items": rows, "counts": counts}
+
+
+def _attach_files(c, rows):
+    """把每筆回饋的附件清單掛上去 (rows 就地修改)。"""
+    ids = [r["id"] for r in rows]
+    by = {}
+    if ids:
+        for f in qa(c, "SELECT id, feedback_id, filename, content_type, size, created_at FROM feedback_files WHERE feedback_id = ANY(%s) ORDER BY id", (ids,)):
+            by.setdefault(f["feedback_id"], []).append(f)
+    for r in rows:
+        r["files"] = by.get(r["id"], [])
 
 
 @router.put("/feedback/{fid}")
@@ -492,19 +507,25 @@ def update_feedback(fid: int, body: FeedbackUpdate):
     if body.status and body.status not in FEEDBACK_STATUS:
         raise HTTPException(400, "status 需為 new / planned / done / rejected")
     with conn() as c:
-        row = q1(c, """UPDATE feedback SET status=coalesce(%s,status), admin_note=coalesce(%s,admin_note), category=coalesce(%s,category), updated_at=now()
-                       WHERE id=%s RETURNING *""", (body.status, body.admin_note, body.category, fid))
+        row = q1(c, """UPDATE feedback SET status=coalesce(%s,status), admin_note=coalesce(%s,admin_note), category=coalesce(%s,category),
+                       resolved_version=coalesce(%s,resolved_version), updated_at=now()
+                       WHERE id=%s RETURNING *""", (body.status, body.admin_note, body.category, (body.resolved_version or "").strip() or None, fid))
         if not row:
             raise HTTPException(404)
+        if row["status"] == "done" and not row["resolved_version"]:
+            row = q1(c, "UPDATE feedback SET resolved_version=%s WHERE id=%s RETURNING *", (_read("VERSION").strip() or None, fid))
         c.commit()
+        _attach_files(c, [row])
         return row
 
 
 @router.delete("/feedback/{fid}", status_code=204)
 def delete_feedback(fid: int):
+    import shutil
     with conn() as c:
         c.execute("DELETE FROM feedback WHERE id=%s", (fid,))
         c.commit()
+    shutil.rmtree(_os.path.join(_FILES_DIR, "feedback", str(fid)), ignore_errors=True)
 
 
 @router.get("/feedback-export.md")
@@ -514,6 +535,7 @@ def export_feedback_md(status: str = "new,planned"):
     wanted = [s for s in status.split(",") if s]
     with conn() as c:
         rows = qa(c, "SELECT * FROM feedback WHERE status = ANY(%s) ORDER BY category, created_at", (wanted,))
+        _attach_files(c, rows)
     cat_name = {"bug": "問題", "feature": "需求", "question": "疑問", "other": "其他"}
     lines = [f"# 拆單系統 操作者回饋（{date.today()}，版本 {_read('VERSION').strip()}）", ""]
     for r in rows:
@@ -522,10 +544,95 @@ def export_feedback_md(status: str = "new,planned"):
         lines.append("  - " + "｜".join(meta))
         if r["admin_note"]:
             lines.append(f"  - 備註：{r['admin_note']}")
+        for f in r.get("files", []):
+            lines.append(f"  - 附件：{f['filename']} (/api/feedback-files/{f['id']})")
     if not rows:
         lines.append("（沒有待處理的回饋）")
     return _Resp("\n".join(lines) + "\n", media_type="text/markdown; charset=utf-8",
                  headers={"Content-Disposition": "attachment; filename=\"feedback.md\""})
+
+
+# ───────────────────────── 回饋附件 (截圖 / 檔案) ─────────────────────────
+_FILES_DIR = _os.environ.get("FILES_DIR", "./data/files")
+_FB_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".xlsx", ".xls", ".csv", ".txt", ".md", ".docx", ".zip")
+_FB_MAX = 25 * 1024 * 1024
+_SAFE_FB = _re.compile(r"[^\w.\-一-鿿()（）]+")
+
+
+def _fb_file_path(f) -> str:
+    return _os.path.join(_FILES_DIR, "feedback", str(f["feedback_id"]), f["stored_name"])
+
+
+@router.post("/feedback/{fid}/files", status_code=201)
+async def upload_feedback_files(fid: int, files: list[UploadFile] = File(...)):
+    """回饋附上截圖或檔案 (可多個)。畫面截圖用 Win+Shift+S 後直接在回饋視窗 Ctrl+V 貼上即可。"""
+    out = []
+    with conn() as c:
+        if not q1(c, "SELECT 1 FROM feedback WHERE id=%s", (fid,)):
+            raise HTTPException(404, "回饋不存在")
+        for up in files:
+            data = await up.read()
+            if not data:
+                continue
+            if len(data) > _FB_MAX:
+                raise HTTPException(400, f"{up.filename} 超過 25 MB")
+            name = up.filename or "image.png"
+            ext = _os.path.splitext(name)[1].lower()
+            if not ext and (up.content_type or "").startswith("image/"):
+                ext = "." + up.content_type.split("/")[1].replace("jpeg", "jpg")
+                name += ext
+            if ext not in _FB_EXT:
+                raise HTTPException(400, f"{name}：只接受圖片、PDF、Excel、CSV、文字檔、Word、ZIP")
+            row = q1(c, "INSERT INTO feedback_files(feedback_id, filename, stored_name, content_type, size) VALUES (%s,%s,'pending',%s,%s) RETURNING *",
+                     (fid, name, up.content_type, len(data)))
+            stored = f"{row['id']}_{_SAFE_FB.sub('_', name)[:120]}"
+            c.execute("UPDATE feedback_files SET stored_name=%s WHERE id=%s", (stored, row["id"]))
+            row["stored_name"] = stored
+            _os.makedirs(_os.path.dirname(_fb_file_path(row)), exist_ok=True)
+            with open(_fb_file_path(row), "wb") as fh:
+                fh.write(data)
+            out.append(row)
+        c.commit()
+    return out
+
+
+@router.get("/feedback-files/{file_id}")
+def get_feedback_file(file_id: int):
+    with conn() as c:
+        f = q1(c, "SELECT * FROM feedback_files WHERE id=%s", (file_id,))
+    if not f or not _os.path.exists(_fb_file_path(f)):
+        raise HTTPException(404)
+    inline = (f["content_type"] or "").startswith("image/") or f["content_type"] == "application/pdf"
+    return FileResponse(_fb_file_path(f), media_type=f["content_type"] or "application/octet-stream",
+                        filename=f["filename"], content_disposition_type="inline" if inline else "attachment")
+
+
+@router.delete("/feedback-files/{file_id}", status_code=204)
+def delete_feedback_file(file_id: int):
+    with conn() as c:
+        f = q1(c, "DELETE FROM feedback_files WHERE id=%s RETURNING *", (file_id,))
+        c.commit()
+    if f:
+        try:
+            _os.remove(_fb_file_path(f))
+        except OSError:
+            pass
+
+
+# ───────────────────────── 更新通知看板 ─────────────────────────
+@router.get("/updates")
+def updates_board():
+    """更新通知：目前版本、每一版修了哪些回饋 (針對性修正)、還在處理中的回饋、完整更新紀錄。"""
+    ver = _read("VERSION").strip() or "dev"
+    with conn() as c:
+        done = qa(c, """SELECT id, category, message, reporter, admin_note, resolved_version, updated_at, page
+                        FROM feedback WHERE status='done' ORDER BY resolved_version DESC NULLS LAST, updated_at DESC""")
+        pending = qa(c, "SELECT id, category, message, reporter, status, admin_note, created_at FROM feedback WHERE status IN ('new','planned') ORDER BY status DESC, created_at")
+    groups = {}
+    for r in done:
+        groups.setdefault(r["resolved_version"] or "（未標版本）", []).append(r)
+    return {"version": ver, "resolved": [{"version": k, "items": v} for k, v in groups.items()],
+            "pending": pending, "changelog": _read("CHANGELOG.md")}
 
 
 # ───────────────────────── 零件單 ─────────────────────────

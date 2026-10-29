@@ -133,6 +133,17 @@ CREATE TABLE IF NOT EXISTS feedback (
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
+-- 1.1.0：回饋可附截圖/檔案；完成時記錄修正版本 (更新通知看板用)
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS resolved_version text;
+CREATE TABLE IF NOT EXISTS feedback_files (
+    id           serial PRIMARY KEY,
+    feedback_id  int NOT NULL REFERENCES feedback(id) ON DELETE CASCADE,
+    filename     text NOT NULL,
+    stored_name  text NOT NULL,
+    content_type text,
+    size         int,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
 """
 
 
