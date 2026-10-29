@@ -139,3 +139,10 @@ button.small { padding: 2px 6px; font-size: 12px; }
 
 /* 1.1.0 回饋 #5：料單「類別」欄預設隱藏 */
 table.parts.hidecat th:nth-child(3), table.parts.hidecat td:nth-child(3) { display: none; }
+
+/* 1.2.0 刪除可復原 */
+.undobar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 24px; background: #0f172a; color: #fff; padding: 10px 16px; border-radius: 8px; display: none; z-index: 60; box-shadow: 0 4px 14px rgba(0,0,0,.3); font-size: 14px; }
+.undobar.show { display: flex; gap: 12px; align-items: center; }
+.undobar button.undo { background: #fff; color: #0f172a; border: none; border-radius: 6px; padding: 4px 12px; font-weight: 600; cursor: pointer; }
+.undobar button.undo:hover { background: #e2e8f0; }
+@media print { .undobar { display: none !important; } }

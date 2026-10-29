@@ -631,6 +631,8 @@ class ProjectIn(BaseModel):
     status: str = "draft"
     revision_dates: list[str] = Field(default_factory=list)
     note: Optional[str] = None
+    default_color_code: Optional[str] = None        # 1.2.0 專案預設櫃身色號 (新增櫃體自動帶入)
+    default_door_color_code: Optional[str] = None   # 專案預設門片色號
 
 
 def _next_order_no(c, d: date) -> str:
@@ -671,9 +673,11 @@ def create_project(body: ProjectIn):
         raise HTTPException(400, "案場名稱不可空白")
     with conn() as c:
         row = q1(c, """INSERT INTO projects(order_no,site_name,customer_id,designer,order_date,delivery_date,delivery_address,
-                       board_thickness,joint_type,status,revision_dates,note) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) RETURNING *""",
+                       board_thickness,joint_type,status,revision_dates,note,default_color_code,default_door_color_code)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s) RETURNING *""",
                  (_next_order_no(c, d), body.site_name.strip(), body.customer_id, body.designer, d, body.delivery_date, body.delivery_address,
-                  body.board_thickness, body.joint_type, body.status, _json(body.revision_dates), body.note))
+                  body.board_thickness, body.joint_type, body.status, _json(body.revision_dates), body.note,
+                  (body.default_color_code or "").strip() or None, (body.default_door_color_code or "").strip() or None))
         c.commit()
         return row
 
@@ -695,13 +699,46 @@ def get_project(pid: int):
 def update_project(pid: int, body: ProjectIn):
     with conn() as c:
         row = q1(c, """UPDATE projects SET site_name=%s,customer_id=%s,designer=%s,order_date=coalesce(%s,order_date),delivery_date=%s,
-                       delivery_address=%s,board_thickness=%s,joint_type=%s,status=%s,revision_dates=%s::jsonb,note=%s WHERE id=%s RETURNING *""",
+                       delivery_address=%s,board_thickness=%s,joint_type=%s,status=%s,revision_dates=%s::jsonb,note=%s,
+                       default_color_code=%s,default_door_color_code=%s WHERE id=%s RETURNING *""",
                  (body.site_name, body.customer_id, body.designer, body.order_date, body.delivery_date, body.delivery_address,
-                  body.board_thickness, body.joint_type, body.status, _json(body.revision_dates), body.note, pid))
+                  body.board_thickness, body.joint_type, body.status, _json(body.revision_dates), body.note,
+                  (body.default_color_code or "").strip() or None, (body.default_door_color_code or "").strip() or None, pid))
         if not row:
             raise HTTPException(404)
         c.commit()
         return row
+
+
+class ProjectApplyColorIn(BaseModel):
+    color_code: Optional[str] = None
+    door_color_code: Optional[str] = None
+    skip_backboard: bool = False
+    only_empty: bool = False
+
+
+@app.post("/api/projects/{pid}/apply-color")
+def project_apply_color(pid: int, body: ProjectApplyColorIn):
+    """整案套色 (1.2.0)：所有櫃體的板材套櫃身色、門片/面板套門片色，並存成專案預設。"""
+    if not (body.color_code or "").strip():
+        raise HTTPException(400, "請填櫃身色號")
+    door = (body.door_color_code or "").strip() or None
+    with conn() as c:
+        if not q1(c, "SELECT 1 FROM projects WHERE id=%s", (pid,)):
+            raise HTTPException(404)
+        n = 0
+        for cb in qa(c, "SELECT id FROM cabinets WHERE project_id=%s", (pid,)):
+            for pt in qa(c, "SELECT id, name, category, color_code FROM parts WHERE cabinet_id=%s AND coalesce(category,'') NOT LIKE '%%五金'", (cb["id"],)):
+                if body.only_empty and pt["color_code"]:
+                    continue
+                if body.skip_backboard and pt["name"] in ("背板", "抽底"):
+                    continue
+                c.execute("UPDATE parts SET color_code=%s WHERE id=%s", ((door or body.color_code) if _is_door(pt["category"], pt["name"]) else body.color_code, pt["id"]))
+                n += 1
+            c.execute("UPDATE cabinets SET color_code=%s, door_color_code=%s WHERE id=%s", (body.color_code, door, cb["id"]))
+        c.execute("UPDATE projects SET default_color_code=%s, default_door_color_code=%s WHERE id=%s", (body.color_code, door, pid))
+        c.commit()
+    return {"updated_parts": n}
 
 
 @app.delete("/api/projects/{pid}", status_code=204)
@@ -807,10 +844,14 @@ def create_cabinet(pid: int, body: CabinetIn):
         if q1(c, "SELECT 1 FROM cabinets WHERE project_id=%s AND cabinet_no=%s", (pid, no)):
             raise HTTPException(400, f"櫃號 {no} 已存在，請改用其他櫃號")
         note = body.note if body.note else rules.cabinet_note(body.name)
+        # 1.2.0：沒填色號就用專案預設
+        color = (body.color_code or "").strip() or p.get("default_color_code")
+        door_color = (body.door_color_code or "").strip() or p.get("default_door_color_code") or None
+        body.color_code, body.door_color_code = color, door_color
         cb = q1(c, """INSERT INTO cabinets(project_id,cabinet_no,name,height,depth,width,batch,note,sort,color_code,drawing_attachment_id,drawing_page,drawing_label,door_color_code)
                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-                (pid, no, body.name, body.height, body.depth, body.width, body.batch, note, mx["s"] + 1, body.color_code,
-                 body.drawing_attachment_id, body.drawing_page, body.drawing_label, body.door_color_code or None))
+                (pid, no, body.name, body.height, body.depth, body.width, body.batch, note, mx["s"] + 1, color,
+                 body.drawing_attachment_id, body.drawing_page, body.drawing_label, door_color))
         if body.generate_default_parts:
             rows = _template_rows(c, body.template_id, body.height, body.depth, body.width, p["board_thickness"], body.with_inner, body.with_doors)
             for i, (cat, name, L, W, T, qty, is_door) in enumerate(rows, start=1):

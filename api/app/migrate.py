@@ -137,6 +137,9 @@ CREATE TABLE IF NOT EXISTS feedback (
 ALTER TABLE feedback ADD COLUMN IF NOT EXISTS resolved_version text;
 -- 1.1.0 回饋 #2：櫃身 / 門片分色
 ALTER TABLE cabinets ADD COLUMN IF NOT EXISTS door_color_code text;
+-- 1.2.0：專案預設色號 (新增櫃體自動帶入；整案套色)
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS default_color_code text;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS default_door_color_code text;
 -- 1.1.0 回饋 #3：櫃體範本 (新增櫃體時依類型產生標準板件；尺寸公式用 H 櫃高 / D 櫃深 / W 櫃寬 / t 板厚)
 CREATE TABLE IF NOT EXISTS cabinet_templates (
     id    serial PRIMARY KEY,

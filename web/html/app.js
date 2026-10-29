@@ -23,6 +23,29 @@ function toast(msg, err = false) {
   setTimeout(() => (t.className = 'toast'), err ? 4000 : 2000);
 }
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// ───────── 刪除可復原 (1.2.0)：先隱藏、10 秒後才真的刪；期間按「復原」全部還原 ─────────
+const pendingDeletes = new Map();
+function applyPendingHides() { for (const e of pendingDeletes.values()) e.selectors.forEach((s) => document.querySelectorAll(s).forEach((el) => (el.style.display = 'none'))); }
+function deferDelete(key, label, selectors, commit) {
+  if (pendingDeletes.has(key)) return;
+  const entry = { selectors, commit, timer: null };
+  pendingDeletes.set(key, entry);
+  applyPendingHides();
+  const bar = document.getElementById('undobar');
+  const n = pendingDeletes.size;
+  bar.innerHTML = `${esc(label)}${n > 1 ? `（共 ${n} 項）` : ''} <button type="button" class="undo">復原</button>`; bar.classList.add('show');
+  const finish = async () => { if (!pendingDeletes.has(key)) return; pendingDeletes.delete(key); if (!pendingDeletes.size) bar.classList.remove('show'); try { await commit(); } catch (e) { toast(e.message, true); } };
+  entry.timer = setTimeout(finish, 10000);
+  bar.querySelector('button.undo').onclick = () => {
+    for (const e of pendingDeletes.values()) { clearTimeout(e.timer); e.selectors.forEach((s) => document.querySelectorAll(s).forEach((el) => (el.style.display = ''))); }
+    pendingDeletes.clear(); bar.classList.remove('show'); toast('已復原');
+  };
+}
+function flushDeletes() { for (const [k, e] of [...pendingDeletes]) { clearTimeout(e.timer); pendingDeletes.delete(k); e.commit().catch(() => {}); } document.getElementById('undobar')?.classList.remove('show'); }
+window.addEventListener('hashchange', flushDeletes);
+window.addEventListener('beforeunload', flushDeletes);
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushDeletes(); });
+
 const num = (v) => (v === null || v === undefined || v === '' ? '' : (+v).toLocaleString('zh-TW', { maximumFractionDigits: 2 }));
 // 下拉選項；目前值不在清單內時也列出來，避免一改別格就被清空
 const opt = (list, cur, blank = true) => {
@@ -396,6 +419,9 @@ async function pageProject(id, tab) {
       <label>2修改日期 <input type="date" name="rev2" value="${rev[1] || ''}"></label>
       <label>3修改日期 <input type="date" name="rev3" value="${rev[2] || ''}"></label>
       <label>備註 <input name="note" value="${esc(p.note || '')}" style="min-width:220px"></label>
+      <label>預設櫃身色號 <input class="num" name="default_color_code" list="colors" value="${esc(p.default_color_code || '')}" title="新增櫃體時自動帶入"></label>
+      <label>預設門片色號 <input class="num" name="default_door_color_code" list="colors" value="${esc(p.default_door_color_code || '')}" placeholder="同櫃身"></label>
+      <button type="button" class="link" id="applyall" title="把預設櫃身/門片色號套到本案全部櫃體與板材">整案套色</button>
       <button class="primary">儲存表頭</button>
     </form>
   </div>
@@ -418,6 +444,13 @@ async function pageProject(id, tab) {
     try { await api('/projects/' + id, { method: 'PUT', body: f }); toast('已儲存'); pageProject(id, state.tab); }
     catch (err) { toast(err.message, true); }
   };
+  $app.querySelector('#applyall').onclick = async () => {
+    const code = $app.querySelector('#hdr [name=default_color_code]').value.trim(); const door = $app.querySelector('#hdr [name=default_door_color_code]').value.trim();
+    if (!code) return toast('請先填預設櫃身色號', true);
+    const skip = !confirm(`把櫃身 ${code}${door ? `、門片 ${door}` : ''} 套到本案全部 ${p.cabinets.length} 個櫃體的板材？\n（按「取消」則背板/抽底維持不變，其餘照套）`);
+    try { const r = await api(`/projects/${id}/apply-color`, { method: 'POST', body: { color_code: code, door_color_code: door || null, skip_backboard: skip } }); toast(`已套色 ${r.updated_parts} 片板材`); pageProject(id, state.tab); }
+    catch (err) { toast(err.message, true); }
+  };
   $app.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { location.hash = `#/project/${id}/${b.dataset.tab}`; }));
   const body = document.getElementById('tabbody');
   await ({ parts: renderParts, drawings: renderDrawings, summary: renderSummary, quote: renderQuote, labels: renderLabels, serials: renderSerials, material: renderMaterial, partslist: renderPartsList })[state.tab](body, p);
@@ -432,13 +465,13 @@ function renderParts(body, p) {
     <aside class="nav card compact">
       <div class="row" style="justify-content:space-between"><b>櫃體 (${p.cabinets.length})</b>
         <span><button class="link" id="expall">展開</button><button class="link" id="colall">收合</button></span></div>
-      <label class="chk small muted" title="料單表格的「類別」欄平常用不到，預設隱藏；類別仍會自動判斷"><input type="checkbox" id="showcat" ${showCat() ? 'checked' : ''}> 顯示類別欄</label>
+      <label class="chk small muted" style="display:flex;align-items:center;gap:4px" title="料單表格的「類別」欄平常用不到，預設隱藏；類別仍會自動判斷"><input type="checkbox" id="showcat" ${showCat() ? 'checked' : ''}> 顯示類別欄</label>
       <ul>${p.cabinets.map((cb) => `<li><a href="#cab-${cb.id}" data-nav="${cb.id}"><span class="no">${cb.cabinet_no}</span> ${esc(cb.name)} <span class="muted">${cb.parts.filter((x) => !(x.category || '').endsWith('五金')).reduce((a, x) => a + x.qty, 0)}片</span></a></li>`).join('')}</ul>
       <form id="newcab" class="newcab">
         <b>新增櫃體</b>
         <input name="name" required placeholder="櫃體名稱 (例：玄關收納疊櫃)" list="cabnames"><datalist id="cabnames">${[...new Set(p.cabinets.map((c) => c.name))].map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
         <div class="row"><label>櫃高 <input class="num" name="height" type="number" step="0.1"></label><label>櫃深 <input class="num" name="depth" type="number" step="0.1"></label><label>櫃寬 <input class="num" name="width" type="number" step="0.1"></label></div>
-        <div class="row"><label>櫃身色號 <input class="num" name="color_code" list="colors"></label><label>門片色號 <input class="num" name="door_color_code" list="colors" placeholder="同櫃身"></label></div>
+        <div class="row"><label>櫃身色號 <input class="num" name="color_code" list="colors" value="${esc(p.default_color_code || '')}" title="預設值來自表頭的「預設櫃身色號」"></label><label>門片色號 <input class="num" name="door_color_code" list="colors" value="${esc(p.default_door_color_code || '')}" placeholder="同櫃身"></label></div>
         <div class="row"><label>櫃號 <input class="sm" name="cabinet_no" type="number" placeholder="自動"></label><label>批次 <input class="sm" name="batch" type="number" value="1"></label></div>
         <label class="chk"><input type="checkbox" name="gen" checked> 自動產生標準板件，類型：</label>
         <select name="template_id" style="width:100%" title="基礎資料 → 櫃體範本 可調整每種類型的板件與尺寸公式">${(state.templates || []).map((t) => `<option value="${t.id}" title="${esc(t.note || '')}">${esc(t.name)}</option>`).join('') || '<option value="">內建標準櫃</option>'}</select>
@@ -465,6 +498,7 @@ function renderParts(body, p) {
   };
   body.querySelectorAll('[data-collapse]').forEach((b) => (b.onclick = () => { const id = +b.dataset.collapse; state.collapsed.has(id) ? state.collapsed.delete(id) : state.collapsed.add(id); renderParts(body, p); }));
   p.cabinets.forEach((cb) => wireCabinet(body, p, cb));
+  applyPendingHides();
 }
 
 // 只重畫一個櫃體卡片 (儲存一格後不整頁重載，游標與捲動位置不跑掉)
@@ -479,6 +513,7 @@ async function refreshCabinet(body, p, cabId) {
   tmp.innerHTML = cabinetCard(fresh, Object.keys(state.catalog), p);
   old.replaceWith(tmp.firstElementChild);
   wireCabinet(body, p, fresh);
+  applyPendingHides();
   const nav = body.querySelector(`[data-nav="${cabId}"]`);
   if (nav) nav.innerHTML = `<span class="no">${fresh.cabinet_no}</span> ${esc(fresh.name)} <span class="muted">${fresh.parts.filter((x) => x.name && !(x.category || '').endsWith('五金')).reduce((a, x) => a + x.qty, 0)}片</span>`;
 }
@@ -507,17 +542,25 @@ function wireCabinet(body, p, cb) {
     catch (err) { toast(err.message, true); }
   }));
   q('[data-view]').forEach((b) => (b.onclick = () => { const [aid, pg] = b.dataset.view.split(':'); openViewer(+aid, +pg || 1); }));
-  q('[data-delcab]').forEach((b) => (b.onclick = async () => { if (!confirm(`刪除櫃號 ${cb.cabinet_no}「${cb.name}」與其全部板材？`)) return; await api('/cabinets/' + cb.id, { method: 'DELETE' }); toast('已刪除'); pageProject(p.id, 'parts'); }));
+  q('[data-delcab]').forEach((b) => (b.onclick = () => deferDelete(`cab-${cb.id}`, `已刪除櫃號 ${cb.cabinet_no}「${cb.name}」`, [`#cab-${cb.id}`, `li:has([data-nav="${cb.id}"])`],
+    async () => { await api('/cabinets/' + cb.id, { method: 'DELETE', keepalive: true }); if (location.hash.startsWith(`#/project/${p.id}`)) pageProject(p.id, state.tab); })));
   q('[data-addpart]').forEach((b) => (b.onclick = async () => {
     try {
       const r = await api(`/cabinets/${cb.id}/parts`, { method: 'POST', body: { name: '', qty: 1, category: b.dataset.cat || null } });
       await refreshCabinet(body, p, cb.id); document.querySelector(`tr[data-part="${r.id}"] input[name=name]`)?.focus();
     } catch (err) { toast(err.message, true); }
   }));
-  q('[data-delpart]').forEach((b) => (b.onclick = async () => {
+  q('[data-delpart]').forEach((b) => (b.onclick = () => {
     const x = cb.parts.find((y) => y.id === +b.dataset.delpart);
-    if (x?.name && !confirm(`刪除 ${x.part_no}「${x.name}」？`)) return;
-    await api('/parts/' + b.dataset.delpart, { method: 'DELETE' }); refreshCabinet(body, p, cb.id);
+    deferDelete(`part-${x.id}`, `已刪除 ${x.part_no}「${x.name || '草稿列'}」`, [`tr[data-part="${x.id}"]`],
+      async () => { await api('/parts/' + x.id, { method: 'DELETE', keepalive: true }); if (document.getElementById('cab-' + cb.id)) refreshCabinet(body, p, cb.id); });
+  }));
+  q('[data-copypart]').forEach((b) => (b.onclick = async () => {
+    const x = cb.parts.find((y) => y.id === +b.dataset.copypart);
+    try {
+      const r = await api(`/cabinets/${cb.id}/parts`, { method: 'POST', body: { category: x.category, name: x.name, length: x.length, width: x.width, thickness: x.thickness, qty: x.qty, color_code: x.color_code, remark: x.remark, status_code: x.status_code || 'A' } });
+      await refreshCabinet(body, p, cb.id); const el = document.querySelector(`tr[data-part="${r.id}"] input[name=name]`); el?.focus(); el?.select();
+    } catch (err) { toast(err.message, true); }
   }));
   q('[data-reset]').forEach((b) => (b.onclick = async () => { await api(`/parts/${b.dataset.reset}/reset-auto`, { method: 'POST' }); refreshCabinet(body, p, cb.id); }));
   q('tr[data-part]').forEach((tr) => {
@@ -539,10 +582,18 @@ function wireCabinet(body, p, cb) {
           await api('/parts/' + part.id, { method: 'PUT', body: data });
           const focusName = inp.name;
           await refreshCabinet(body, p, cb.id);
-          const next = nextInput(document.querySelector(`tr[data-part="${part.id}"]`), focusName); next?.focus({ preventScroll: true }); next?.select?.();
+          const next = navTarget(document.querySelector(`tr[data-part="${part.id}"]`), focusName, tr.dataset.nav || 'right'); next?.focus({ preventScroll: true }); next?.select?.();
         } catch (err) { delete tr.dataset.saving; toast(err.message, true); }
       };
-      inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } };
+      // Enter = 存檔並往下一列同一欄 (Shift+Enter 往上)；Tab = 往右 (Shift+Tab 往左)；值沒改也會移動
+      inp.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault(); tr.dataset.nav = e.shiftKey ? 'up' : 'down';
+          const target = navTarget(tr, inp.name, tr.dataset.nav);
+          inp.blur();
+          setTimeout(() => { if (!tr.dataset.saving) { target?.focus({ preventScroll: true }); target?.select?.(); } }, 0);
+        } else if (e.key === 'Tab') { tr.dataset.nav = e.shiftKey ? 'left' : 'right'; }
+      };
     });
   });
 }
@@ -553,6 +604,17 @@ function nextInput(tr, name) {
   return null;
 }
 function findPart(p, id) { for (const cb of p.cabinets) for (const x of cb.parts) if (x.id === id) return x; return null; }
+// 鍵盤流程 (1.2.0)：down/up = 下/上一列同一欄 (跳過隱藏列)，left/right = 同列前/後一欄
+function navTarget(tr, name, dir) {
+  if (!tr) return null;
+  if (dir === 'down' || dir === 'up') {
+    let row = dir === 'down' ? tr.nextElementSibling : tr.previousElementSibling;
+    while (row && row.offsetParent === null) row = dir === 'down' ? row.nextElementSibling : row.previousElementSibling;
+    const el = row?.querySelector(`[name=${name}]`); return el && el.offsetParent !== null ? el : null;
+  }
+  if (dir === 'left') { for (let i = ORDER.indexOf(name) - 1; i >= 0; i--) { const el = tr.querySelector(`[name=${ORDER[i]}]`); if (el && el.offsetParent !== null) return el; } return null; }
+  return nextInput(tr, name);
+}
 
 function cabinetCard(cb, cats, p) {
   const statusOpts = (cur) => state.lookups['狀態'].map((s) => `<option value="${s.code}" ${s.code == cur ? 'selected' : ''}>${s.code} ${esc(s.name)}</option>`).join('');
@@ -605,7 +667,7 @@ function cabinetCard(cb, cats, p) {
         ${txt(x, 'reminder', 100)}
         <td class="auto r">${num(x.area_cai)}</td><td class="auto r">${num(x.amount)}</td>
         <td><select name="status_code">${statusOpts(x.status_code)}</select></td>
-        <td class="nowrap">${(x.manual_fields || []).length ? `<button type="button" class="link" data-reset="${x.id}" title="清除手動覆寫，恢復自動值">↺</button>` : ''}<button type="button" class="link danger" data-delpart="${x.id}">✕</button></td>
+        <td class="nowrap">${(x.manual_fields || []).length ? `<button type="button" class="link" data-reset="${x.id}" title="清除手動覆寫，恢復自動值">↺</button>` : ''}<button type="button" class="link" data-copypart="${x.id}" title="複製這一列到最下面（同名同尺寸再改）">⧉</button><button type="button" class="link danger" data-delpart="${x.id}" title="刪除（10 秒內可復原）">✕</button></td>
       </tr>`).join('')}
     </table></div>
     <div class="row" style="margin-top:6px">
